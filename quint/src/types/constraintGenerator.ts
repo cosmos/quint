@@ -18,6 +18,7 @@ import {
   QuintAssume,
   QuintBool,
   QuintConst,
+  QuintDeclaration,
   QuintDef,
   QuintEx,
   QuintInstance,
@@ -49,6 +50,7 @@ import {
   withConstraints,
 } from './specialConstraints'
 import { FreshVarGenerator } from '../FreshVarGenerator'
+import { substitutionsToString } from './printing'
 
 export type SolvingFunctionType = (
   _table: LookupTable,
@@ -196,6 +198,7 @@ export class ConstraintGeneratorVisitor implements IRVisitor {
     // bearing the highest number.
     const definedSignature = this.typeForName(e.opcode, e.id, e.args.length)
     const a: QuintType = { kind: 'var', name: this.freshVarGenerator.freshVar('_t') }
+    this.freeNames[this.freeNames.length - 1].typeVariables.add(a.name)
     const result = argsResult
       .chain(results => {
         switch (e.opcode) {
@@ -282,8 +285,8 @@ export class ConstraintGeneratorVisitor implements IRVisitor {
         })
     })
 
-    this.addToResults(e.id, result)
     this.freeNames.pop()
+    this.addToResults(e.id, result)
   }
 
   //   Γ ⊢ e1: (t1, c1)  s = solve(c1)     s(Γ ∪ {n: t1}) ⊢ e2: (t2, c2)
@@ -297,6 +300,19 @@ export class ConstraintGeneratorVisitor implements IRVisitor {
     // TODO: Occurs check on operator body to prevent recursion, see https://github.com/informalsystems/quint/issues/171
 
     this.addToResults(e.id, this.fetchResult(e.expr.id))
+  }
+
+  enterDecl(_def: QuintDeclaration) {
+    const lastParamNames = this.currentFreeNames()
+    const paramNames = {
+      typeVariables: new Set(lastParamNames.typeVariables),
+      rowVariables: new Set(lastParamNames.rowVariables),
+    }
+    this.freeNames.push(paramNames)
+  }
+
+  exitDecl(_def: QuintDeclaration) {
+    this.freeNames.pop()
   }
 
   exitOpDef(e: QuintOpDef) {
@@ -359,7 +375,15 @@ export class ConstraintGeneratorVisitor implements IRVisitor {
         // https://github.com/informalsystems/quint/issues/690
         this.types.forEach((oldScheme, id) => {
           const newType = applySubstitution(this.table, subs, oldScheme.type)
-          const newScheme: TypeScheme = this.quantify(newType)
+          const n1 = typeNames(oldScheme.type).typeVariables
+          const n2 = typeNames(newType).typeVariables
+          const varsThatWereBound = [...n1].filter(name => !n2.has(name))
+          varsThatWereBound.map(v => {
+            if (oldScheme.typeVariables.has(v)) {
+              console.log(`Quantified Variable ${v} was bound in ${id}.\n${substitutionsToString(subs)}`)
+            }
+          })
+          const newScheme: TypeScheme = { ...oldScheme, type: newType }
           this.addToResults(id, right(newScheme))
         })
 
