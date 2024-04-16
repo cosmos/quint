@@ -17,7 +17,7 @@ module ics20v2 {
 
   // Fundamental types
   type Height = int
-  type ForwardingPath= List[str]
+  type ForwardingPath= List[HopElement]
 
   // IBC packet types
   type FungibleTokenData = {
@@ -119,11 +119,14 @@ type ChainStateV2 = {
   /*     public interface     */
   /****************************/
 
+ // For Token forwarding without MultiDenom support 
+ // Only modification needed to sendFungibleTokens are: 
+ // 1. Pass forwadingPath as a function parameter   
+ // 2. Pass the forwardingPath into the data
  pure def sendFungibleTokens(chainState: ChainState, denomination: DenomTrace, amount: UINT256,
                               sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
                               timeoutHeight: Height, timeoutTimestamp: uint64): ChainState = {
-    //if(forwardingPath==[])(chainState)
-    //else{
+    
     pure val bankResult = if (movingBackAlongTrace(denomination, { port: sourcePort, channel: sourceChannel })) {
       // burn vouchers
       (chainState.bank).BurnCoins(sender, denomination, amount)
@@ -151,14 +154,56 @@ type ChainStateV2 = {
     } else {
       chainState
     }
-    //}
+    
   }
-   
+
+// Helper functions for onRecvPacket Logic execution
+  pure def assignCFA(address: Address, chainState: ChainState, packet: Packet): str = {
+    if(chainState.channelForwardingAddresses.get(packet.destChannel)==""){
+        (address) // Pass in MOCK ADDRESS or WRITE NEW ADDRESS FUNCTION  
+    }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
+    }
+
+  pure def assignRecvAddress(FPexists: bool, packet: Packet, address: Address): (str,str) = {
+    if(FPexists){
+        pure val receiver = address 
+        pure val finalReceiver = packet.data.receiver
+        (receiver,finalReceiver)
+    } else{
+        pure val receiver = packet.data.receiver
+        (receiver,"")
+    }
+  }
+
+  pure def getNextPortChannel(forwardingPath: ForwardingPath): (str, str, List[HopElement]) = {
+    if (forwardingPath==[]) {
+    // Handle the case where the forwarding path is empty
+    ("","", [])  // Returning empty strings for port and channel and an empty list for the path
+  } else {
+    pure val headElement = forwardingPath.head()  // Get the first element
+    pure val nextPort = headElement.port   // Get NextPort
+    pure val nextChannel = headElement.channel   // Get NextChannel
+    pure val newForwardingPath= forwardingPath.tail() // Delete first element of the forwardingPath
+    (nextPort,nextChannel,newForwardingPath)
+  }
+  }
+
+
   /// `onRecvPacket` should return an acknowledgment, but it also has to update
   /// the chain state, so the return type is the updated value for the chain
   /// state and the acknowledgment
   pure def onRecvPacket(chainState: ChainState, packet: Packet): (ChainState, FungibleTokenPacketAcknowledgement) = {
     pure val data = packet.data
+    
+    // Addresses assignment. Helper functions define spec logic for assignment 
+    pure val channelForwardingAddress= assignCFA("MockAddress", chainState, packet)
+    pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
+    pure val receiver = addressTuple._1
+    pure val finalReceiver = addressTuple._2 
+    
+    // Note that for quint is better not the preconstruct a succesfull ack 
+    // but rather to assign it to true of false when needed
+    
     pure val movingBack = movingBackAlongTrace(data.denom, { port: packet.sourcePort, channel: packet.sourceChannel })
     pure val newDenom = updateTrace(movingBack, data.denom, { port: packet.destPort, channel: packet.destChannel })
 
@@ -166,12 +211,12 @@ type ChainStateV2 = {
     pure val result = if (movingBack) {
       // unescrow tokens to receiver
       pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.destChannel)
-      pure val bankResult = chainState.bank.TransferCoins(escrowAccount, data.receiver, newDenom, data.amount)
+      pure val bankResult = chainState.bank.TransferCoins(escrowAccount, receiver, newDenom, data.amount)
 
       (bankResult, "transfer coins failed")
     } else {
       // mint vouchers to receiver
-      pure val bankResult = chainState.bank.MintCoins(data.receiver, newDenom, data.amount)
+      pure val bankResult = chainState.bank.MintCoins(receiver, newDenom, data.amount)
 
       (bankResult, "mint coins failed")
     }
@@ -179,14 +224,48 @@ type ChainStateV2 = {
     pure val bankResult = result._1
     pure val errorMessage = result._2
 
-    pure val newChainState = chainState.with("bank", bankResult.accounts)
+    
     pure val ack = if (bankResult.success) {
       { success: true, errorMessage: "", packet: packet }
     } else {
       { success: false, errorMessage: errorMessage, packet: packet }
     }
 
-    (newChainState, ack)
+    if(ack.success==false){
+      (chainState,ack)
+    }
+    // Otherwise proceed with token forwarding logic. 
+    else {
+      if(data.forwardingPath!=[]){
+        pure val nextStuff=getNextPortChannel(data.forwardingPath)
+        pure val nextPort=nextStuff._1
+        pure val nextChannel=nextStuff._2
+        pure val newForwardingPath=nextStuff._3
+
+        pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
+                                            .with("forwardingPath", newForwardingPath)
+                                            .with("outPackets", chainState.outPackets.union(Set(packet)))
+
+        pure val newChainState = sendFungibleTokens(intermediateChainState, data.denom, data.amount,
+                              receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
+                              10,10) // Figure Out how to specify timeout stuff 
+
+                  
+        (newChainState,ack)
+      }
+        else{
+        pure val nextStuff=getNextPortChannel(data.forwardingPath)
+        pure val nextPort=nextStuff._1
+        pure val nextChannel=nextStuff._2
+        pure val newForwardingPath=nextStuff._3
+        pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
+                                            .with("forwardingPath", newForwardingPath)
+                                            .with("outPackets", chainState.outPackets.union(Set(packet)))
+  
+        (intermediateChainState, ack) // Here we should return nil for the ack 
+      }
+      }
+    
   }
   
 
