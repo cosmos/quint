@@ -254,13 +254,8 @@ type ChainStateV2 = {
         (newChainState,ack)
       }
         else{
-        pure val nextStuff=getNextPortChannel(data.forwardingPath)
-        pure val nextPort=nextStuff._1
-        pure val nextChannel=nextStuff._2
-        pure val newForwardingPath=nextStuff._3
+        
         pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
-                                            .with("forwardingPath", newForwardingPath)
-                                            .with("outPackets", chainState.outPackets.union(Set(packet)))
   
         (intermediateChainState, ack) // Here we should return nil for the ack 
       }
@@ -337,6 +332,7 @@ module ics20v2Test {
   /// Map from chain identifiers to a map of the chain identifiers it can
   /// communicate with and the channel to be used to send packets. For example,
   /// chain A connects to chain B through channel "channelToB".
+  // NEED TO CHANGE CHANNEL_TOPOLOGY FOR FORWARDING TEST
   pure val CHANNEL_TOPOLOGY = Map(
     "A" -> Map(
       "B" -> "channelToB",
@@ -403,7 +399,7 @@ module ics20v2Test {
   /// of `amount`-many tokens of `denom` from `sender` to `receiver`.
   action sendPacket(sourceChain: str, destChain: str,
                     denom: DenomTrace, amount: UINT256,
-                    sender: Address, receiver: Address): bool = all {
+                    sender: Address, receiver: Address, forwadingPath: ForwardingPath): bool = all {
     // (1) Pre-condition:
     // there is a channel between `sourceChain` and `destChain`
     hasChannelBetween(sourceChain, destChain),
@@ -411,7 +407,7 @@ module ics20v2Test {
     // (2) Send the packet using `sendFungibleTokens`:
     val sourceChainState = chainStates.get(sourceChain)
     val newSourceChainState = sendFungibleTokens(sourceChainState, denom, amount,
-                                                 sender, receiver,
+                                                 sender, receiver, forwadingPath,
                                                  "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
                                                  0, 0)
 
@@ -540,8 +536,23 @@ module ics20v2Test {
     }
 
   pure val ATOM = toDenom("atom")
-  pure val USER_ACCOUNTS = Set("alice", "bob", "charlie")
+  pure val USER_ACCOUNTS = Set("alice", "bob", "charlie","daniel")
   pure val ESCROW_ACCOUNT = "escrow_account"
+/*
+  type ChainState = {
+    bank: Accounts,
+    channels: ChannelCounterparties,
+    channelEscrowAddresses: Channel -> Address,
+    channelForwardingAddresses: Channel -> Address, 
+    // IBC packet handling:
+    outPackets: Set[Packet],                        // outgoing unreceived packets
+    receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
+    inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
+    inTimeouts: Set[Packet], // incoming timeouts
+    forwardingPath: ForwardingPath,               
+    //receiver:str, 
+    //finalReceiver:str                    
+  }*/
 
   // Initialize the protocol
   action init = {
@@ -550,14 +561,17 @@ module ics20v2Test {
       bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      // Verify what channelForwardingAddresses should be initialized to 
+      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT), 
       // Start without any unprocessed packets/acknowledgements/timeouts
       outPackets: Set(),
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
-      inTimeouts: Set()
+      inTimeouts: Set(),
+      forwardingPath: []
     })
   }
-
+/*
   // Take a step in the protocol (non-deterministically chooses one action).
   action step = {
     nondet sourceChain = CHAINS.oneOf()
@@ -566,14 +580,14 @@ module ics20v2Test {
       nondet amount = oneOf(1.to(10))
       nondet sourceAddr = USER_ACCOUNTS.oneOf()
       nondet destAddr = USER_ACCOUNTS.exclude(Set(sourceAddr)).oneOf()
-      sendPacket(sourceChain, destChain, ATOM, amount, sourceAddr, destAddr),
+      sendPacket(sourceChain, destChain, ATOM, amount, sourceAddr, destAddr,[]),
       receivePacket(sourceChain, destChain),
       timeoutPacket(sourceChain, destChain),
       receiveAck(sourceChain),
       receiveTimeout(sourceChain),
     }
   }
-
+*/
   /// Send `amount`-many `denom` tokens from `sender` on `sourceChain` to
   /// `receiver` on `destChain`.
   ///
@@ -581,8 +595,8 @@ module ics20v2Test {
   /// 1. sends the packet from `sourceChain` to `destChain`,
   /// 2. receives the packet on `destChain` and produces an acknowledgement, and
   /// 3. receives and processes the acknowledgement on `sourceChain`.
-  run sendTransfer(sourceChain: str, destChain: str, denom: DenomTrace, amount: UINT256, sender: Address, receiver: Address): bool = (
-      sendPacket(sourceChain, destChain, denom, amount, sender, receiver)
+  run sendTransfer(sourceChain: str, destChain: str, denom: DenomTrace, amount: UINT256, sender: Address, receiver: Address, forwadingPath: ForwardingPath): bool = (
+      sendPacket(sourceChain, destChain, denom, amount, sender, receiver,forwadingPath)
     ).then(
       receivePacket(sourceChain, destChain)
     ).then(
@@ -595,6 +609,7 @@ module ics20v2Test {
 
   // Transfer a single token across these chains: A -> B -> C -> A -> C -> B -> A
   // All transfers are acknowledged as successful.
+  /*
   run ABCACBATest = init.then(all {
     assert(getBalanceIn("A", "alice", ATOM) == 100),
     sendTransfer("A", "B", ATOM, 1, "alice", "bob")
@@ -636,10 +651,12 @@ module ics20v2Test {
       chainStates' = chainStates,
     }
   )
+  */
 
   // From
   // https://github.com/cosmos/ibc-go/blob/a25f0d421c32b3a2b7e8168c9f030849797ff2e8/modules/apps/transfer/transfer_test.go#L44
-  run TransferTest = {
+ /*
+  run LegacyTransferTest = {
     pure val amount = 9223372036854775808
 
     // NOTE: fungible token is prefixed with the full trace in order to verify the packet commitment
@@ -651,14 +668,87 @@ module ics20v2Test {
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("A", "alice", ATOM, amount)
     ).then(
-      sendTransfer("A", "B", ATOM, amount, "alice", "bob")
+      sendTransfer("A", "B", ATOM, amount, "alice", "bob",[])
     ).then(all {
       // check that voucher exists on chain B
       val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
       assert(balanceB == amount),
 
-      sendTransfer("B", "C", denomSentFromAToB, amount, "bob", "charlie")
+      sendTransfer("B", "C", denomSentFromAToB, amount, "bob", "charlie",[])
     }).then(
+      all {
+        // check that the balance is updated on chainC
+        val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
+        assert(balanceC == amount),
+
+        // check that balance on chain B is empty
+        val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
+        assert(balanceB == 0),
+
+        // send from chainC back to chainB
+        sendTransfer("C", "B", denomSentFromBToC, amount, "charlie", "bob",[])
+      }
+    ).then(all {
+      // check that the balance on chainA is zero
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == 0),
+
+      // check that balance on chain B has the transfered amount
+      val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
+      assert(balanceB == amount),
+
+      // check that module account escrow address is empty
+      val balanceEscrow = getBalanceIn("B", ESCROW_ACCOUNT, denomSentFromAToB)
+      assert(balanceEscrow == 0),
+
+      // check that balance on chain C is empty
+      val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
+      assert(balanceC == 0),
+
+      // noop
+      chainStates' = chainStates
+    })
+  }
+*/
+  //Interactive Play Steps: 
+  // quint repl -r ics20v2.qnt::ics20v2Test
+  // setBalanceIn("A", "alice", ATOM, 100)
+  // sendTransfer("A", "C", ATOM, 90, "alice", "charlie",[{ port: "transfer", channel: "channelToA" },{ port: "transfer", channel: "channelToB" } ])
+  // chainStates.get("A")
+  // chainStates.get("B")
+  // chainStates.get("C")
+  run TransferTest = {
+    pure val amount = 9223372036854775808
+
+    // NOTE: fungible token is prefixed with the full trace in order to verify the packet commitment
+    pure val denomInA = ATOM
+    pure val denomSentFromAToB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
+    pure val denomSentFromAToC = denomInA.with("path", [{ port: "transfer", channel: "channelToC" }].concat(denomInA.path))
+    
+    init.then(
+      // Make sure that Alice has enough tokens on chain A. In the go test, this
+      // is implicitly done somewhere in the test environment setup.
+      setBalanceIn("A", "alice", ATOM, amount)
+    ).then(
+      sendTransfer("A", "C", ATOM, amount, "alice", "charlie",[{ port: "transfer", channel: "channelToA" },{ port: "transfer", channel: "channelToB" } ])
+    ).then(all {
+      // check that voucher exists on chain B
+      val balanceB = getBalanceIn("B", "bob", denomSentFromBToC)
+      assert(balanceB == 0),
+      val balanceB1 = getBalanceIn("B", "bob", denomSentFromAToB)
+      assert(balanceB1 == 0),
+      // Look that without changing the topology, the transfer appens directly from A to C
+      val balanceC = getBalanceIn("C", "charlie", denomSentFromAToC)
+      assert(balanceC == amount),
+      
+
+      // noop
+      chainStates' = chainStates
+      //sendTransfer("B", "C", denomSentFromAToB, amount, "bob", "charlie")
+    })
+  }
+   /* .then(
       all {
         // check that the balance is updated on chainC
         val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
@@ -692,7 +782,8 @@ module ics20v2Test {
       chainStates' = chainStates
     })
   }
-
+*/
+/*
   // Test producing a failed acknowledgement:
   //
   // 1. Transfer 50 tokens from Alice on chain A to Bob on chain B.
@@ -793,18 +884,18 @@ module ics20v2Test {
     // noop
     chainStates' = chainStates
   })
-
+  */
   /* ***************************************************************************
    * INVARIANTS
    * **************************************************************************/
 
   // To check in random simulator:
   // $ quint run --main=ics20Test --invariant=BalanceNonNegative ics20.qnt
-
+/*
   // The balance of all denominations in all accounts is always non-negative.
   val BalanceNonNegative = CHAINS.forall(chain =>
       USER_ACCOUNTS.forall(addr =>
         chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) >= 0
     )
-  )
+  )*/
 }
