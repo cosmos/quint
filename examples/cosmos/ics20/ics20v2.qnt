@@ -17,6 +17,7 @@ module ics20v2 {
 
   // Fundamental types
   type Height = int
+  type ForwardingPath= List[str]
 
   // IBC packet types
   type FungibleTokenData = {
@@ -24,7 +25,8 @@ module ics20v2 {
     amount: UINT256,
     sender: Address,
     receiver: Address,
-    memo: str
+    memo: str, 
+    forwardingPath: ForwardingPath // Adding forwarding on V1 data packets 
   }
 
   type Packet = {
@@ -41,8 +43,24 @@ module ics20v2 {
     packet: Packet  // the acknowledged packet
   }
 
-  // Ics20v2 types
+  /// State of the IBC module in a chain
+  type ChainState = {
+    bank: Accounts,
+    channels: ChannelCounterparties,
+    channelEscrowAddresses: Channel -> Address,
+    channelForwardingAddresses: Channel -> Address, 
+    // IBC packet handling:
+    outPackets: Set[Packet],                        // outgoing unreceived packets
+    receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
+    inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
+    inTimeouts: Set[Packet], // incoming timeouts
+    forwardingPath: ForwardingPath,               
+    //receiver:str, 
+    //finalReceiver:str                    
+  }
 
+ // These type will be useful to define the multi-denom which is not currently supported 
+  // Ics20v2 types
   type Token = {
   denom: DenomTrace,
   //trace: str, contained in DenomTrace which has baseDenom and Path   
@@ -72,19 +90,7 @@ module ics20v2 {
     packet: PacketV2  // the acknowledged packet
   }
 
-  /// State of the IBC module in a chain
-  type ChainState = {
-    bank: Accounts,
-    channels: ChannelCounterparties,
-    channelEscrowAddresses: Channel -> Address,
-    // IBC packet handling:
-    outPackets: Set[Packet],                        // outgoing unreceived packets
-    receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
-    inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
-    inTimeouts: Set[Packet],                                      // incoming timeouts
-  }
-
-  type ChainStateV2 = {
+type ChainStateV2 = {
     bank: Accounts,
     channels: ChannelCounterparties,
     channelEscrowAddresses: Channel -> Address,
@@ -113,9 +119,11 @@ module ics20v2 {
   /*     public interface     */
   /****************************/
 
-  pure def sendFungibleTokens(chainState: ChainState, denomination: DenomTrace, amount: UINT256,
-                              sender: Address, receiver: Address, sourcePort: str, sourceChannel: Channel,
+ pure def sendFungibleTokens(chainState: ChainState, denomination: DenomTrace, amount: UINT256,
+                              sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
                               timeoutHeight: Height, timeoutTimestamp: uint64): ChainState = {
+    //if(forwardingPath==[])(chainState)
+    //else{
     pure val bankResult = if (movingBackAlongTrace(denomination, { port: sourcePort, channel: sourceChannel })) {
       // burn vouchers
       (chainState.bank).BurnCoins(sender, denomination, amount)
@@ -126,7 +134,7 @@ module ics20v2 {
     }
 
     if (bankResult.success) {
-      pure val data = { denom: denomination, amount: amount, sender: sender, receiver: receiver, memo: "" }
+      pure val data = { denom: denomination, amount: amount, sender: sender, receiver: receiver, memo: "", forwardingPath: forwardingPath }
 
       // handler.sendPacket
       pure val packet = {
@@ -134,7 +142,7 @@ module ics20v2 {
         sourcePort: sourcePort,
         sourceChannel: sourceChannel,
         destPort: "transfer",
-        destChannel: getCounterparty(chainState, sourceChannel)
+        destChannel: getCounterparty(chainState, sourceChannel),
       }
 
       chainState
@@ -143,8 +151,9 @@ module ics20v2 {
     } else {
       chainState
     }
+    //}
   }
-
+   
   /// `onRecvPacket` should return an acknowledgment, but it also has to update
   /// the chain state, so the return type is the updated value for the chain
   /// state and the acknowledgment
@@ -179,6 +188,7 @@ module ics20v2 {
 
     (newChainState, ack)
   }
+  
 
   /// Refund tokens from a token transfer initiated by `packet`.
   ///
@@ -232,7 +242,7 @@ module ics20v2 {
   }
 }
 
-module ics20Test {
+module ics20v2Test {
   import base.* from "./base"
   import bank.getBalance from "./bank"
   import bank.getBalances from "./bank"
