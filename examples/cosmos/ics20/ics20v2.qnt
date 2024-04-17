@@ -54,7 +54,8 @@ module ics20v2 {
     receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
     inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
     inTimeouts: Set[Packet], // incoming timeouts
-    forwardingPath: ForwardingPath,               
+    forwardedPacket: Set[Packet],
+    forwardingPath: ForwardingPath              
     //receiver:str, 
     //finalReceiver:str                    
   }
@@ -244,19 +245,20 @@ type ChainStateV2 = {
 
         pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
                                             .with("forwardingPath", newForwardingPath)
-                                            .with("outPackets", chainState.outPackets.union(Set(packet)))
+                                            //.with("outPackets", chainState.outPackets.union(Set(packet)))
 
-        pure val newChainState = sendFungibleTokens(intermediateChainState, data.denom, data.amount,
+        pure val newIntermediateChainState = sendFungibleTokens(intermediateChainState, data.denom, data.amount,
                               receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
                               10,10) // Figure Out how to specify timeout stuff 
 
+        pure val newChainState = newIntermediateChainState.with("forwardedPacket", chainState.forwardedPacket.union(Set(packet)))
                   
         (newChainState,ack)
       }
         else{
         
         pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
-  
+                                                    
         (intermediateChainState, ack) // Here we should return nil for the ack 
       }
       }
@@ -297,24 +299,53 @@ type ChainStateV2 = {
       chainState
     }
   }
-
+ 
+ //Helper function for onAck logic executinon
+ pure def eventuallyRefund(chainState: ChainState, packet: Packet, acknowledgement: FungibleTokenPacketAcknowledgement): ChainState ={
+      if (acknowledgement.success==false) {
+       pure val newChainState= refundTokens(chainState, packet)
+      newChainState 
+      }else chainState
+ }
+ 
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
-                               acknowledgement: FungibleTokenPacketAcknowledgement) : ChainState = {
-    if (acknowledgement.success) {
-      chainState  // transfer successful, nothing to do
-    } else {
-      refundTokens(chainState, packet)
-    }
+                               acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState, FungibleTokenPacketAcknowledgement) = {
+      
+      pure val newChainState= eventuallyRefund(chainState, packet, acknowledgement)
+      
+      pure val prevPacket= chainState.forwardedPacket
+      if (prevPacket.setNonEmpty()==true){
+          if (acknowledgement.success) {
+            pure val ack = { success: true, errorMessage: "", packet: prevPacket }
+              (chainState,ack)
+          } else {
+                  pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+                  pure val newChainState2=revertInFlightChanges(packet,prevPacket)
+                  (newChainState2,ack) 
+                  }
+      }else (newChainState,acknowledgement)  
   }
 
   /// Called by the routing module when a packet sent by this module has timed out
   /// (such that it will not be received on the destination chain).
-  pure def onTimeoutPacket(chainState: ChainState, packet: Packet): ChainState = {
+  pure def onTimeoutPacket(chainState: ChainState, packet: Packet): (ChainState,FungibleTokenPacketAcknowledgement)  = {
     // the packet timed out, so refund the tokens
-    refundTokens(chainState, packet)
+    pure val newChainState=refundTokens(chainState, packet)
+    pure val prevPacket= chainState.forwardedPacket
+      if (prevPacket.setNonEmpty()==true){
+          pure val newChainState2=revertInFlightChanges(packet,prevPacket)
+          pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+          (newChainState2,ack)
+      }
+      else {
+          pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+          (newChainState,ack)
+      }
+
   }
-}
+
+} // Module closing bracket 
 
 module ics20v2Test {
   import base.* from "./base"
@@ -568,6 +599,7 @@ module ics20v2Test {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
+      forwardedPacket: Set(),
       forwardingPath: []
     })
   }
