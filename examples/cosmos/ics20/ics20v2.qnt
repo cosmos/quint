@@ -48,16 +48,15 @@ module ics20v2 {
     bank: Accounts,
     channels: ChannelCounterparties,
     channelEscrowAddresses: Channel -> Address,
-    channelForwardingAddresses: Channel -> Address, 
+    channelForwardingAddresses: Channel -> Address, //Needed? 
     // IBC packet handling:
     outPackets: Set[Packet],                        // outgoing unreceived packets
     receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
     inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
     inTimeouts: Set[Packet], // incoming timeouts
-    forwardedPacket: Set[Packet],
-    forwardingPath: ForwardingPath              
-    //receiver:str, 
-    //finalReceiver:str                    
+    forwardedPacket: List[Packet], //packetForwardPath
+   // acknowlegedPacket: List[FungibleTokenPacketAcknowledgement], //For acknowlegment writing 
+    forwardingPath: ForwardingPath                                 
   }
 
  // These type will be useful to define the multi-denom which is not currently supported 
@@ -243,23 +242,21 @@ type ChainStateV2 = {
         pure val nextChannel=nextStuff._2
         pure val newForwardingPath=nextStuff._3
 
-        pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
+        pure val tempChainState = chainState.with("bank", bankResult.accounts)
                                             .with("forwardingPath", newForwardingPath)
-                                            //.with("outPackets", chainState.outPackets.union(Set(packet)))
 
-        pure val newIntermediateChainState = sendFungibleTokens(intermediateChainState, data.denom, data.amount,
+        pure val newTempChainState = sendFungibleTokens(tempChainState, data.denom, data.amount,
                               receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
-                              10,10) // Figure Out how to specify timeout stuff 
-
-        pure val newChainState = newIntermediateChainState.with("forwardedPacket", chainState.forwardedPacket.union(Set(packet)))
-                  
+                              10,10) // Which Timeout?  
+        // store packet for future sending ack
+        pure val newChainState = newTempChainState.with("forwardedPacket", [packet])
         (newChainState,ack)
       }
         else{
         
-        pure val intermediateChainState = chainState.with("bank", bankResult.accounts)
+        pure val tempChainState = chainState.with("bank", bankResult.accounts)
                                                     
-        (intermediateChainState, ack) // Here we should return nil for the ack 
+        (tempChainState, ack) // Here we should return nil for the ack 
       }
       }
     
@@ -310,40 +307,103 @@ type ChainStateV2 = {
  
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
-                               acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState, FungibleTokenPacketAcknowledgement) = {
+                               acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState) = {
+      // if the transfer failed, refund the tokens
+      pure val tempChainState = eventuallyRefund(chainState, packet, acknowledgement)
       
-      pure val newChainState= eventuallyRefund(chainState, packet, acknowledgement)
-      
-      pure val prevPacket= chainState.forwardedPacket
-      if (prevPacket.setNonEmpty()==true){
+      // check if the packet that was sent is from a previously forwarded packet
+      if(tempChainState.forwardedPacket!=[]){
+          pure val prevPacket=tempChainState.forwardedPacket.head() 
           if (acknowledgement.success) {
-            pure val ack = { success: true, errorMessage: "", packet: prevPacket }
-              (chainState,ack)
+              pure val ack ={ success: true, errorMessage: "forwarded packet succeeded", packet: prevPacket }
+              val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
+              pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
+              newChainState
           } else {
-                  pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
-                  pure val newChainState2=revertInFlightChanges(packet,prevPacket)
-                  (newChainState2,ack) 
+                // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
+                // we must revert the changes that came from successfully receiving the tokens on our chain
+                // before propogating the error acknowledgement back to original sender chain        
+                pure val revertedChainState=revertInFlightChanges(tempChainState,packet,prevPacket)
+                // write error acknowledgement
+                pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+                val newInAcknowledgements = revertedChainState.inAcknowledgements.union(Set(ack))
+                pure val newChainState= revertedChainState.with("inAcknowledgements", newInAcknowledgements)
+                newChainState
                   }
-      }else (newChainState,acknowledgement)  
+      }else tempChainState  
   }
 
   /// Called by the routing module when a packet sent by this module has timed out
   /// (such that it will not be received on the destination chain).
-  pure def onTimeoutPacket(chainState: ChainState, packet: Packet): (ChainState,FungibleTokenPacketAcknowledgement)  = {
+  pure def onTimeoutPacket(chainState: ChainState, packet: Packet): (ChainState)  = {
     // the packet timed out, so refund the tokens
-    pure val newChainState=refundTokens(chainState, packet)
-    pure val prevPacket= chainState.forwardedPacket
-      if (prevPacket.setNonEmpty()==true){
-          pure val newChainState2=revertInFlightChanges(packet,prevPacket)
-          pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
-          (newChainState2,ack)
+    pure val refundChainState=refundTokens(chainState, packet)
+    // check if the packet was sent is from a previously forwarded packet
+    pure val prevPacket=refundChainState.forwardedPacket.head()
+    if(refundChainState.forwardedPacket!=[]){
+      // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
+      // we must revert the changes that came from successfully receiving the tokens on our chain
+      // before propogating the error acknowledgement back to original sender chain
+      pure val tempChainState=revertInFlightChanges(refundChainState,packet,prevPacket)
+      // write error acknowledgement
+      pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+      val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
+      pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
+      newChainState
       }
-      else {
-          pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
-          (newChainState,ack)
-      }
-
+      else refundChainState
   }
+
+// Helper Function revertInFlightChanges
+// Version without Multidenom Support 
+// revertInFlightChanges reverts the receive packet and send packet
+// that occurs in the middle chains during a packet forwarding
+// If an error occurs further down the line, the state changes
+// on this chain must be reverted before sending back the error acknowledgement
+// to ensure atomic packet forwarding
+pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, receivedPacket: Packet): ChainState = {
+ pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
+ pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
+ pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
+ pure val hopElementRecv = {port: receivedPacket.destPort, channel: receivedPacket.destChannel}
+ // check if the packet we sent out was sending as source or not
+ // in this case we escrowed the outgoing tokens
+ pure val bankResult =
+      if (movingBackAlongTrace(sentPacket.data.denom, hopElementSent)) {
+          // check if the packet we received was a source token for our chain
+          if (movingBackAlongTrace(receivedPacket.data.denom, hopElementRecv)) {
+              // receive sent tokens from the received escrow to the forward escrow account
+              // so we must send the tokens back from the forward escrow to the original received escrow account
+              chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+          }
+          else {
+              // receive minted vouchers and sent to the forward escrow account
+              // so we must remove the vouchers from the forward escrow account and burn them
+              chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
+            }
+    } else {
+          // in this case we burned the vouchers of the outgoing packets
+          // check if the packet we received was a source token for our chain
+          // in this case, the tokens were unescrowed from the reverse escrow account
+          if (movingBackAlongTrace(receivedPacket.data.denom, hopElementRecv)){
+            // in this case we must mint the burned vouchers and send them back to the escrow account
+            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+          }else{
+            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
+            // So no state changes were made, and thus no reversion is necessary
+            // No Op Miniting 0 Tokens 
+            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, 0)
+            }
+          }
+      
+      if (bankResult.success) {
+      chainState.with("bank", bankResult.accounts)
+    } else {
+      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
+      //       We treat bank failure as a noop.
+      chainState
+    }
+}
 
 } // Module closing bracket 
 
@@ -569,21 +629,7 @@ module ics20v2Test {
   pure val ATOM = toDenom("atom")
   pure val USER_ACCOUNTS = Set("alice", "bob", "charlie","daniel")
   pure val ESCROW_ACCOUNT = "escrow_account"
-/*
-  type ChainState = {
-    bank: Accounts,
-    channels: ChannelCounterparties,
-    channelEscrowAddresses: Channel -> Address,
-    channelForwardingAddresses: Channel -> Address, 
-    // IBC packet handling:
-    outPackets: Set[Packet],                        // outgoing unreceived packets
-    receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
-    inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
-    inTimeouts: Set[Packet], // incoming timeouts
-    forwardingPath: ForwardingPath,               
-    //receiver:str, 
-    //finalReceiver:str                    
-  }*/
+
 
   // Initialize the protocol
   action init = {
@@ -599,11 +645,12 @@ module ics20v2Test {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: Set(),
+      forwardedPacket: [],
+      //acknowlegedPacket: [],
       forwardingPath: []
     })
   }
-/*
+
   // Take a step in the protocol (non-deterministically chooses one action).
   action step = {
     nondet sourceChain = CHAINS.oneOf()
@@ -619,7 +666,7 @@ module ics20v2Test {
       receiveTimeout(sourceChain),
     }
   }
-*/
+
   /// Send `amount`-many `denom` tokens from `sender` on `sourceChain` to
   /// `receiver` on `destChain`.
   ///
