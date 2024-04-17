@@ -56,7 +56,7 @@ module ics20v2 {
     inTimeouts: Set[Packet], // incoming timeouts
     forwardedPacket: List[Packet], //packetForwardPath
    // acknowlegedPacket: List[FungibleTokenPacketAcknowledgement], //For acknowlegment writing 
-    forwardingPath: ForwardingPath                                 
+   // forwardingPath: ForwardingPath                                 
   }
 
  // These type will be useful to define the multi-denom which is not currently supported 
@@ -196,7 +196,7 @@ type ChainStateV2 = {
     pure val data = packet.data
     
     // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFA("MockAddress", chainState, packet)
+    pure val channelForwardingAddress= assignCFA("forwardingAddress", chainState, packet)
     pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
     pure val receiver = addressTuple._1
     pure val finalReceiver = addressTuple._2 
@@ -243,7 +243,7 @@ type ChainStateV2 = {
         pure val newForwardingPath=nextStuff._3
 
         pure val tempChainState = chainState.with("bank", bankResult.accounts)
-                                            .with("forwardingPath", newForwardingPath)
+                                            //.with("forwardingPath", newForwardingPath)
 
         pure val newTempChainState = sendFungibleTokens(tempChainState, data.denom, data.amount,
                               receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
@@ -262,7 +262,6 @@ type ChainStateV2 = {
     
   }
   
-
   /// Refund tokens from a token transfer initiated by `packet`.
   ///
   /// Should be called if the token transfer fails on the receiver chain
@@ -426,15 +425,15 @@ module ics20v2Test {
   // NEED TO CHANGE CHANNEL_TOPOLOGY FOR FORWARDING TEST
   pure val CHANNEL_TOPOLOGY = Map(
     "A" -> Map(
-      "B" -> "channelToB",
-      "C" -> "channelToC"
+      "B" -> "channelToB"
+      //"C" -> "channelToC"
     ),
     "B" -> Map(
       "A" -> "channelToA",
       "C" -> "channelToC"
     ),
     "C" -> Map(
-      "A" -> "channelToA",
+      //"A" -> "channelToA",
       "B" -> "channelToB"
     )
   )
@@ -452,6 +451,7 @@ module ics20v2Test {
     }).setToMap()
   })
 
+  // Probably Need To change this function and the way it's used to proceed with forwarding 
   /// Return true iff there is a channel from `sourceChain` to `destChain` defined in `CHANNEL_TOPOLOGY`.
   ///
   /// In particular, this returns false if `sourceChain == destChain`.
@@ -493,7 +493,7 @@ module ics20v2Test {
                     sender: Address, receiver: Address, forwadingPath: ForwardingPath): bool = all {
     // (1) Pre-condition:
     // there is a channel between `sourceChain` and `destChain`
-    hasChannelBetween(sourceChain, destChain),
+    //hasChannelBetween(sourceChain, destChain),
 
     // (2) Send the packet using `sendFungibleTokens`:
     val sourceChainState = chainStates.get(sourceChain)
@@ -516,7 +516,7 @@ module ics20v2Test {
     all {
       // (1) Pre-condition:
       // there is a channel between `sourceChain` and `destChain`
-      hasChannelBetween(sourceChain, destChain),
+     // hasChannelBetween(sourceChain, destChain),
       // there is an unreceived packet traveling from `sourceChain` to `destChain`
       sourceChainState.outPackets.exists(packet => packet.isTravelingBetween(sourceChain, destChain)),
 
@@ -556,7 +556,7 @@ module ics20v2Test {
     all {
       // (1) Pre-condition:
       // there is a channel between `sourceChain` and `destChain`
-      hasChannelBetween(sourceChain, destChain),
+      //hasChannelBetween(sourceChain, destChain),
       // there is an unreceived packet traveling from `sourceChain` to `destChain`
       sourceChainState.outPackets.exists(packet => packet.isTravelingBetween(sourceChain, destChain)),
 
@@ -646,8 +646,7 @@ module ics20v2Test {
       inAcknowledgements: Set(),
       inTimeouts: Set(),
       forwardedPacket: [],
-      //acknowlegedPacket: [],
-      forwardingPath: []
+      //forwardingPath: []
     })
   }
 
