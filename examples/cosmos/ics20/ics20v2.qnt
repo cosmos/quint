@@ -306,23 +306,22 @@ type ChainStateV2 = {
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
                                acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState) = {
-      // if the transfer failed, refund the tokens
-      pure val tempChainState = eventuallyRefund(chainState, packet, acknowledgement)
       
+  
       // check if the packet that was sent is from a previously forwarded packet
-      if(tempChainState.forwardedPacket!=[]){
-          pure val prevPacket=tempChainState.forwardedPacket.head() 
+      if(chainState.forwardedPacket!=[]){
+          pure val prevPacket=chainState.forwardedPacket.head() 
           if (acknowledgement.success) {
               // The acknowledgment get written in the action for simuliation purposes. 
               //pure val ack ={ success: true, errorMessage: "forwarded packet succeeded", packet: prevPacket }
               //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
               //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
-              tempChainState
+              chainState
           } else {
                 // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
                 // we must revert the changes that came from successfully receiving the tokens on our chain
                 // before propogating the error acknowledgement back to original sender chain        
-                pure val revertedChainState=revertInFlightChanges(tempChainState,packet,prevPacket)
+                pure val revertedChainState=revertInFlightChanges(chainState,packet,prevPacket)
                 // The acknowledgment get written in the action for simuliation purposes.
                 // write error acknowledgement
                 //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
@@ -330,7 +329,12 @@ type ChainStateV2 = {
                 //pure val newChainState= revertedChainState.with("inAcknowledgements", newInAcknowledgements)
                 revertedChainState
                   }
-      }else tempChainState  
+      }else {
+        // if the transfer failed, refund the tokens
+      pure val tempChainState = eventuallyRefund(chainState, packet, acknowledgement)
+      tempChainState
+      } 
+        
   }
 
   /// Called by the routing module when a packet sent by this module has timed out
