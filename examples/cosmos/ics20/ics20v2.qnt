@@ -307,7 +307,6 @@ type ChainStateV2 = {
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
                                acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState) = {
       
-  
       // check if the packet that was sent is from a previously forwarded packet
       if(chainState.forwardedPacket!=[]){
           pure val prevPacket=chainState.forwardedPacket.head() 
@@ -340,15 +339,13 @@ type ChainStateV2 = {
   /// Called by the routing module when a packet sent by this module has timed out
   /// (such that it will not be received on the destination chain).
   pure def onTimeoutPacket(chainState: ChainState, packet: Packet): (ChainState)  = {
-    // the packet timed out, so refund the tokens
-    pure val refundChainState=refundTokens(chainState, packet)
     // check if the packet was sent is from a previously forwarded packet
-    pure val prevPacket=refundChainState.forwardedPacket.head()
-    if(refundChainState.forwardedPacket!=[]){
+    pure val prevPacket=chainState.forwardedPacket.head()
+    if(chainState.forwardedPacket!=[]){
       // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
       // we must revert the changes that came from successfully receiving the tokens on our chain
       // before propogating the error acknowledgement back to original sender chain
-      pure val tempChainState=revertInFlightChanges(refundChainState,packet,prevPacket)
+      pure val tempChainState=revertInFlightChanges(chainState,packet,prevPacket)
       // write error acknowledgement
       // The acknowledgment get written in the action for simuliation purposes.
       //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
@@ -356,7 +353,11 @@ type ChainStateV2 = {
       //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
       tempChainState
       }
-      else refundChainState
+      else {
+        // the packet timed out, so refund the tokens
+        pure val refundChainState=refundTokens(chainState, packet)
+        refundChainState
+      }
   }
 
 // Helper Function revertInFlightChanges
