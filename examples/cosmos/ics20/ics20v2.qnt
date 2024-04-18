@@ -501,7 +501,7 @@ module ics20v2Test {
     // (2) Send the packet using `sendFungibleTokens`:
     val sourceChainState = chainStates.get(sourceChain)
     val newSourceChainState = sendFungibleTokens(sourceChainState, denom, amount,
-                                                 sender, receiver, forwardingPath, // USE SOURCE DEST FORWARDING 
+                                                 sender, receiver, forwardingPath, 
                                                  "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
                                                  0, 0)
 
@@ -635,7 +635,7 @@ module ics20v2Test {
     }
 
   pure val ATOM = toDenom("atom")
-  pure val USER_ACCOUNTS = Set("alice", "bob", "charlie","daniel")
+  pure val USER_ACCOUNTS = Set("alice", "bob", "charlie")
   pure val ESCROW_ACCOUNT = "escrow_account"
 
 
