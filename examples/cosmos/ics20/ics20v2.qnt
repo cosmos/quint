@@ -648,7 +648,7 @@ module ics20v2Test {
   action init = {
     chainStates' = CHAINS.mapBy(chain => {
       // All accounts are empty, except for Alice in chain A who has 100 atoms
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
@@ -794,7 +794,79 @@ run DetailedHappyPathTest = {
     )
   }
 
+// Scenario1 Test 
+// sendTransfer from B --> C without forwarding. 
+// Then sendTransfer with forwarding from C --> B --> A Forcing Error between B --> A.
+// Verify Everything get reverted properly  
+// To checkout the full execution trace run this test with the following command: 
+// quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
+run Scenario1Test = {
+    
+    pure val amount = 90
 
+    // NOTE: fungible token is prefixed with the full trace in order to verify the packet commitment
+    pure val denomInA = ATOM
+    // First B sends to C ATOMs. 
+    pure val denomSentFromBToC = denomInA.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomInA.path))
+    pure val denomSentFromCToB = denomSentFromBToC
+    pure val denomSentFromBToA = ATOM  
+      //denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    //pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
+    init.then(
+      // Make sure that Alice has enough tokens on chain A. In the go test, this
+      // is implicitly done somewhere in the test environment setup.
+      setBalanceIn("A", "alice", ATOM, amount)
+    ).then(
+      setBalanceIn("B", "bob", ATOM, amount)
+    ).then(
+      //Normal Transfer B to C
+      sendPacket("B", "C", ATOM, amount, "bob", "charlie",[])
+    ).then(
+      receivePacket("B", "C") 
+    ).then(
+      receiveAck("B") 
+    ).then(
+      sendPacket("C", "B", denomSentFromBToC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+    ).then(
+      receivePacket("C", "B") 
+    ).then(
+      // Trigger error on the second transfer during forwarding B -->A using an incorrect denom.  
+      sendPacket("B", "A", denomSentFromCToB, amount, "bob", "alice",[])
+      //sendPacket("B", "A", ATOM, amount, "bob", "alice",[])
+    ).then(
+      // Isn't actually the receive packet that write an error ack eventually? Here if sendPacket fails we cannot
+      // receive the packet thus, writing the error ack that is used for refunding. 
+      receivePacket("B", "A") // This fails because sendPacket failed as depicted in the scenario1. 
+      // Shall we check in the sendFungibleTokens for the result of the sendPacket and eventually write error there?  
+    ).then(
+      receiveAck("B")
+    ).then(
+      receiveAck("C")
+    ).then(all {
+      // check that voucher exists on chain B
+      //val balanceB = getBalanceIn("B", "escrow_account", denomSentFromAToB)
+      //assert(balanceB == amount),
+      // check that the balance is updated on chainC
+      val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
+      assert(balanceC == amount),
 
+      // check that balance on chain B is empty
+      //val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
+      //assert(balanceB == 0),
+      // check the escrow_account balance on chain B is amount
+      //val balanceB2 = getBalanceIn("B", "escrow_account", denomSentFromAToB)
+      //assert(balanceB2 == amount),
 
+      // check that balance on chain A is empty
+      //val balanceA = getBalanceIn("A", "alice", denomInA)
+      //assert(balanceA == 0),
+      // check the escrow_account balance on chain A is amount
+      //val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      //assert(balanceA == amount),
+
+      // noop
+      chainStates' = chainStates
+      }
+    )
+  }
 }
