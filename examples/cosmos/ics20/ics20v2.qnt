@@ -800,6 +800,20 @@ run DetailedHappyPathTest = {
 // Verify Everything get reverted properly  
 // To checkout the full execution trace run this test with the following command: 
 // quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
+// Need to figure out how to produce and error ack during onRecv: 
+// Starting point could be the ics20 test 
+//// Test producing a failed acknowledgement:
+  //
+  // 1. Transfer 50 tokens from Alice on chain A to Bob on chain B.
+  // 2. Manipulate the escrow account on chain A, to contain less than 50 tokens.
+  //    This will provoke the transfer below to produce a failed acknowledgement.
+  // 3. Try to transfer the 50 tokens back from Bob to Alice.
+  //    3.1 First, this burns Bob's 50 vouchers on chain B, and sends a packet to chain A.
+  //    3.2 Receipt of the packet on chain A calls the `onRecvPacket` callback.
+  //    3.3 `onRecvPacket` calls the bank module's `TransferCoins` to unescrow 50 tokens to Alice.
+  //    3.4 `TransferCoins` returns an error, because -- after manipulating it in (2) -- the escrow account has insufficient funds.
+  //    3.5 The bank module error causes `onRecvPacket` to return a failed acknowledgement.
+  //    3.6 `onAcknowledgePacket` on chain "B" re-mints the burned vouchers to Bob.
 run Scenario1Test = {
     
     pure val amount = 90
@@ -830,14 +844,17 @@ run Scenario1Test = {
     ).then(
       receivePacket("C", "B") 
     ).then(
-      // Trigger error on the second transfer during forwarding B -->A using an incorrect denom.  
+      // TODO 
+      // We need to understand how to properly trigger an error, 
+      // the second transfer during forwarding B -->A must work.
+      // then we need to manipulate something in order to make the onRecv to Fails.   
       sendPacket("B", "A", denomSentFromCToB, amount, "bob", "alice",[])
       //sendPacket("B", "A", ATOM, amount, "bob", "alice",[])
     ).then(
       // Isn't actually the receive packet that write an error ack eventually? Here if sendPacket fails we cannot
       // receive the packet thus, writing the error ack that is used for refunding. 
       receivePacket("B", "A") // This fails because sendPacket failed as depicted in the scenario1. 
-      // Shall we check in the sendFungibleTokens for the result of the sendPacket and eventually write error there?  
+        
     ).then(
       receiveAck("B")
     ).then(
