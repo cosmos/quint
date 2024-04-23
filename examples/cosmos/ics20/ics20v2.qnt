@@ -195,7 +195,7 @@ type ChainStateV2 = {
     pure val data = packet.data
     
     // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFA("escrow_account", chainState, packet)
+    pure val channelForwardingAddress= assignCFA("forward_account", chainState, packet)
     pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
     pure val receiver = addressTuple._1
     pure val finalReceiver = addressTuple._2 
@@ -327,7 +327,7 @@ type ChainStateV2 = {
                 //val newInAcknowledgements = revertedChainState.inAcknowledgements.union(Set(ack))
                 //pure val newChainState= revertedChainState.with("inAcknowledgements", newInAcknowledgements)
                 revertedChainState
-                  }
+                }
       }else {
         // if the transfer failed, refund the tokens
       pure val tempChainState = eventuallyRefund(chainState, packet, acknowledgement)
@@ -376,8 +376,10 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
  // in this case we escrowed the outgoing tokens
  pure val bankResult =
       if (movingBackAlongTrace(sentPacket.data.denom, hopElementSent)) {
+          // If we are here the packet we sent out was sending as source 
           // check if the packet we received was a source token for our chain
           if (movingBackAlongTrace(receivedPacket.data.denom, hopElementRecv)) {
+              // if we are here the packet we received was a source token for our chain 
               // receive sent tokens from the received escrow to the forward escrow account
               // so we must send the tokens back from the forward escrow to the original received escrow account
               chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
@@ -385,6 +387,9 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
           else {
               // receive minted vouchers and sent to the forward escrow account
               // so we must remove the vouchers from the forward escrow account and burn them
+            //  chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              // if we are here the packet we received was a not source token for our chain 
               chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
             }
     } else {
@@ -429,18 +434,29 @@ module ics20v2Test {
   /// Map from chain identifiers to a map of the chain identifiers it can
   /// communicate with and the channel to be used to send packets. For example,
   /// chain A connects to chain B through channel "channelToB".
-  // NEED TO CHANGE CHANNEL_TOPOLOGY FOR FORWARDING TEST
+  /// Testing Topology: 
+  // For testing, imagine the following topology between channels in chains A, B and C.
+  // PS: There should be similar channels between A and C, those are ommited in the diagram for simplicity
+  // ┌───────────────────┐           ┌────────────────────────────────────┐         ┌───────────────────┐
+  // │      Chain A      │           │               Chain B              │         │      Chain C      │
+  // │                   │           │                                    │         │                   │
+  // │ ┌───────────────┐ │           │ ┌──────────────┐  ┌──────────────┐ │         │ ┌───────────────┐ │
+  // │ │               │ │           │ │              │  │              │ │         │ │               │ │
+  // │ │  channelToB   │◄├───────────┤►│  channelToA  │  │  channelToC  │◄├─────────┤►│  channelToB   │ │
+  // │ │               │ │           │ │              │  │              │ │         │ │               │ │
+  // │ └───────────────┘ │           │ └──────────────┘  └──────────────┘ │         │ └───────────────┘ │
+  // │                   │           │                                    │         │                   │
+  // └───────────────────┘           └────────────────────────────────────┘         └───────────────────┘
+
   pure val CHANNEL_TOPOLOGY = Map(
     "A" -> Map(
       "B" -> "channelToB"
-      //"C" -> "channelToC"
     ),
     "B" -> Map(
       "A" -> "channelToA",
       "C" -> "channelToC"
     ),
     "C" -> Map(
-      //"A" -> "channelToA",
       "B" -> "channelToB"
     )
   )
@@ -586,12 +602,45 @@ module ics20v2Test {
       chainStates' = chainStates.set(sourceChain, newSourceChainState)
     }
 
+
+  
+  // This function is meant to be used to test error acks. 
+  action forwardAck(forwarderChain: str, receiverChain: str): bool =
+    val receiverChainState = chainStates.get(receiverChain)
+    val forwarderChainState = chainStates.get(forwarderChain)
+    
+    all {
+      // (1) Pre-condition:
+      // there is an incoming acknowledgement
+      forwarderChainState.inAcknowledgements.setNonEmpty(),
+
+      // (2) Compute updated chain state:
+      // non-deterministically pic an acknowledgement
+      nondet acknowledgement = forwarderChainState.inAcknowledgements.oneOf()
+      nondet receiverAcknowledgement = receiverChainState.inAcknowledgements.oneOf()
+      // call the `onAcknowledgePacket` callback
+      val ackedChainState = onAcknowledgePacket(receiverChainState, receiverAcknowledgement.packet, acknowledgement)
+      // remove `acknowledgement` from incoming acknowledgements
+      val newInAcknowledgements = ackedChainState.inAcknowledgements.exclude(Set(acknowledgement))
+      // remove `acknowledgement.packet` from receivedButUnacknowledgedPackets
+      
+      val newInUnackPackets = ackedChainState.receivedButUnacknowledgedPackets.exclude(Set(acknowledgement.packet))
+      
+      val newChainState = ackedChainState.with("inAcknowledgements", newInAcknowledgements)
+                                         .with("receivedButUnacknowledgedPackets", newInUnackPackets)
+
+      // (3) Quint state transition:
+      chainStates' = chainStates.set(receiverChain, newChainState)
+    }
+
+
   /// Receive an acknowledgement on `chain`:
   /// - Pick an arbitrary, previously unreceived acknowledgement on `chain`.
   /// - Call the `onAcknowledgePacket` callback on it.
   /// - Update the chain state to record the acknowledgement as received.
   action receiveAck(chain: str): bool =
     val chainState = chainStates.get(chain)
+    
     all {
       // (1) Pre-condition:
       // there is an incoming acknowledgement
@@ -603,16 +652,28 @@ module ics20v2Test {
       // call the `onAcknowledgePacket` callback
       val ackedChainState = onAcknowledgePacket(chainState, acknowledgement.packet, acknowledgement)
       // remove `acknowledgement` from incoming acknowledgements
-      val newInAcknowledgements = ackedChainState.inAcknowledgements.exclude(Set(acknowledgement))
-      // remove `acknowledgement.packet` from receivedButUnacknowledgedPackets
-      
-      val newInUnackPackets = ackedChainState.receivedButUnacknowledgedPackets.exclude(Set(acknowledgement.packet))
-      
-      val newChainState = ackedChainState.with("inAcknowledgements", newInAcknowledgements)
+      if(acknowledgement.success==true){
+        val newInAcknowledgements = ackedChainState.inAcknowledgements.exclude(Set(acknowledgement))
+        // remove `acknowledgement.packet` from receivedButUnacknowledgedPackets
+        val newInUnackPackets = ackedChainState.receivedButUnacknowledgedPackets.exclude(Set(acknowledgement.packet))
+        val newChainState = ackedChainState.with("inAcknowledgements", newInAcknowledgements)
                                          .with("receivedButUnacknowledgedPackets", newInUnackPackets)
 
-      // (3) Quint state transition:
-      chainStates' = chainStates.set(chain, newChainState)
+        // (3) Quint state transition:
+        chainStates' = chainStates.set(chain, newChainState)
+    }
+    else{
+        // Preserve the failed ack to subsequent forwarding.  
+        //val newInAcknowledgements = ackedChainState.inAcknowledgements.exclude(Set(acknowledgement))
+        // remove `acknowledgement.packet` from receivedButUnacknowledgedPackets
+        val newInUnackPackets = ackedChainState.receivedButUnacknowledgedPackets.exclude(Set(acknowledgement.packet))
+        val newChainState = ackedChainState//.with("inAcknowledgements", newInAcknowledgements)
+                                         .with("receivedButUnacknowledgedPackets", newInUnackPackets)
+
+        // (3) Quint state transition:
+        chainStates' = chainStates.set(chain, newChainState)
+    }
+
     }
 
   /// Receive a timeout on `chain`:
@@ -648,11 +709,12 @@ module ics20v2Test {
   action init = {
     chainStates' = CHAINS.mapBy(chain => {
       // All accounts are empty, except for Alice in chain A who has 100 atoms
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
+      //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
-      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT), 
+      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
       // Start without any unprocessed packets/acknowledgements/timeouts
       outPackets: Set(),
       receivedButUnacknowledgedPackets: Set(),
@@ -713,7 +775,7 @@ run DetailedHappyPathTest = {
     ).then(
       receivePacket("A", "B") 
     ).then(
-      sendPacket("B", "C", denomSentFromAToB, amount, "escrow_account", "charlie",[])
+      sendPacket("B", "C", denomSentFromAToB, amount, "forward_account", "charlie",[])
     ).then(
       receivePacket("B", "C") 
     ).then(
@@ -721,9 +783,6 @@ run DetailedHappyPathTest = {
     ).then(
       receiveAck("A")
     ).then(all {
-      // check that voucher exists on chain B
-      val balanceB = getBalanceIn("B", "escrow_account", denomSentFromAToB)
-      assert(balanceB == amount),
       // check that the balance is updated on chainC
       val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
       assert(balanceC == amount),
@@ -765,10 +824,10 @@ run DetailedHappyPathTest = {
       sendTransfer("A", "B", ATOM, amount, "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     ).then(all {
       // check that voucher exists on chain B
-      val balanceB = getBalanceIn("B", "escrow_account", denomSentFromAToB)
+      val balanceB = getBalanceIn("B", "forward_account", denomSentFromAToB)
       assert(balanceB == amount),
 
-      sendTransfer("B", "C", denomSentFromAToB, amount, "escrow_account", "charlie",[])
+      sendTransfer("B", "C", denomSentFromAToB, amount, "forward_account", "charlie",[])
     }).then(
       all {
         // check that the balance is updated on chainC
@@ -794,14 +853,7 @@ run DetailedHappyPathTest = {
     )
   }
 
-// Scenario1 Test 
-// sendTransfer from B --> C without forwarding. 
-// Then sendTransfer with forwarding from C --> B --> A Forcing Error between B --> A.
-// Verify Everything get reverted properly  
-// To checkout the full execution trace run this test with the following command: 
-// quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
-// Need to figure out how to produce and error ack during onRecv: 
-// Starting point could be the ics20 test 
+// Inspiring test from ics20.qnt
 //// Test producing a failed acknowledgement:
   //
   // 1. Transfer 50 tokens from Alice on chain A to Bob on chain B.
@@ -814,72 +866,134 @@ run DetailedHappyPathTest = {
   //    3.4 `TransferCoins` returns an error, because -- after manipulating it in (2) -- the escrow account has insufficient funds.
   //    3.5 The bank module error causes `onRecvPacket` to return a failed acknowledgement.
   //    3.6 `onAcknowledgePacket` on chain "B" re-mints the burned vouchers to Bob.
-run Scenario1Test = {
-    
+
+// Scenario1 Test 
+// We want to test C->B->A with an error ack happening on B->A. Thus we want to verify everything get reverted properly 
+// In order to create the condition to make the sendFungibleTokens on B->A Pass and then generating an error 
+// in the OnRecv, we need to send some tokens to populate the A escrow_account.  
+// To this aim we will execute
+// 1. A->B 
+// 2. B->C. 
+// 3. Then we trigger C->B->A
+// To checkout the full execution trace run this test with the following command: 
+// quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
+//
+  run Scenario1Test = {
     pure val amount = 90
 
-    // NOTE: fungible token is prefixed with the full trace in order to verify the packet commitment
     pure val denomInA = ATOM
-    // First B sends to C ATOMs. 
-    pure val denomSentFromBToC = denomInA.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomInA.path))
-    pure val denomSentFromCToB = denomSentFromBToC
-    pure val denomSentFromBToA = ATOM  
-      //denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
-    //pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
+    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
+    
     init.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("A", "alice", ATOM, amount)
     ).then(
-      setBalanceIn("B", "bob", ATOM, amount)
+      // Normal Transfer A to B
+      sendPacket("A", "B", ATOM, amount, "alice", "bob",[])
     ).then(
-      //Normal Transfer B to C
-      sendPacket("B", "C", ATOM, amount, "bob", "charlie",[])
+      receivePacket("A", "B") 
     ).then(
+      receiveAck("A") 
+    ).then(all{
+      
+      // alice balance should be 0 
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == 0), 
+      // escrow_account on A should be amount  
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == amount), 
+       // bob balance on B should B amount
+      val balanceB = getBalanceIn("B", "bob", denomAB)
+      assert(balanceB == amount), 
+
+      // Normal Transfer B to C
+      sendPacket("B", "C", denomAB, amount, "bob", "charlie",[])
+    }).then(
       receivePacket("B", "C") 
     ).then(
       receiveAck("B") 
-    ).then(
-      sendPacket("C", "B", denomSentFromBToC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
-    ).then(
+    ).then(all{
+      // Again same checks on B and C 
+      // The chain state before starting the forwardingTransfer should be like this. 
+      // Thus at the end of the test we should have the exact chain state that we see here. 
+      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA == amount),
+
+
+      val balanceB = getBalanceIn("B", "bob", denomAB)
+      assert(balanceB == 0),
+
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == amount), 
+
+      val balanceC = getBalanceIn("C", "charlie", denomABC)
+      assert(balanceC == amount),
+      // Start Forwarding Transfer C -> B -> A
+      sendPacket("C", "B", denomABC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+    }).then(all{
       receivePacket("C", "B") 
-    ).then(
-      // TODO 
-      // We need to understand how to properly trigger an error, 
-      // the second transfer during forwarding B -->A must work.
-      // then we need to manipulate something in order to make the onRecv to Fails.   
-      sendPacket("B", "A", denomSentFromCToB, amount, "bob", "alice",[])
-      //sendPacket("B", "A", ATOM, amount, "bob", "alice",[])
-    ).then(
-      // Isn't actually the receive packet that write an error ack eventually? Here if sendPacket fails we cannot
-      // receive the packet thus, writing the error ack that is used for refunding. 
+    }).then(all{
+      // forward_account on B should be amount // HERE ARE TOKEN TRANSFERRED FROM escrow_account to forward_account? 
+      // OR ARE TOKENS MINTED ON FORWARD ACCOUNT? 
+      val balanceB2 = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB2 == amount), 
+      // escrow_account on B should be 0
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0), 
+      // Manipulate Escrow Balance on Chain A. This should be sufficient to make the transfer from B -> A succed
+      // And the onRecv function on A to generate an error ack.       
+      setBalanceIn("A", "escrow_account", ATOM, amount-1)  
+    }).then(
+      // The sendFungibleTokens here must succed  
+      sendPacket("B", "A", denomAB, amount, "forward_account", "alice",[])
+    ).then(all{
+      
+      val balanceB = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB == 0),
+      //val balanceA = getBalanceIn("A", "alice", denomABC)
+      //assert(balanceA == amount),
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0), 
+
+      // Here during onRecv packet an error ack must be written.  
       receivePacket("B", "A") // This fails because sendPacket failed as depicted in the scenario1. 
         
-    ).then(
-      receiveAck("B")
-    ).then(
-      receiveAck("C")
+    }).then(
+      receiveAck("B") // Error ack is properly written here. // Refund logic properly executed on B
+    ).then(all{
+      val balanceB = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB == 0), // In the case nothing to revert
+      
+      val balanceB = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB == amount), // This should have been reverted to original state before start forwarding transfer. 
+      
+
+      forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
+      }
+       
     ).then(all {
       // check that voucher exists on chain B
       //val balanceB = getBalanceIn("B", "escrow_account", denomSentFromAToB)
       //assert(balanceB == amount),
       // check that the balance is updated on chainC
-      val balanceC = getBalanceIn("C", "charlie", denomSentFromBToC)
+      val balanceC = getBalanceIn("C", "charlie", denomABC)
       assert(balanceC == amount),
 
       // check that balance on chain B is empty
       //val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
       //assert(balanceB == 0),
-      // check the escrow_account balance on chain B is amount
-      //val balanceB2 = getBalanceIn("B", "escrow_account", denomSentFromAToB)
-      //assert(balanceB2 == amount),
+      //check the escrow_account balance on chain B is amount
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == amount),
 
       // check that balance on chain A is empty
       //val balanceA = getBalanceIn("A", "alice", denomInA)
       //assert(balanceA == 0),
       // check the escrow_account balance on chain A is amount
-      //val balanceA = getBalanceIn("A", "escrow_account", denomInA)
-      //assert(balanceA == amount),
+      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA == 89),
 
       // noop
       chainStates' = chainStates
