@@ -1077,29 +1077,7 @@ run DetailedHappyPathTest = {
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("B", "bob", ATOM, amount)
-    ).then(
-      // Make sure that Alice has enough tokens on chain A. In the go test, this
-      // is implicitly done somewhere in the test environment setup.
-    /*  setBalanceIn("A", "alice", ATOM, amount)
-    ).then(
-      // Normal Transfer A to B
-      sendPacket("A", "B", ATOM, amount, "alice", "bob",[])
-    ).then(
-      receivePacket("A", "B") 
-    ).then(
-      receiveAck("A") 
-    ).then(all*/{
-      
-      // alice balance should be 0 
-     // val balanceA = getBalanceIn("A", "alice", denomInA)
-     // assert(balanceA == 0), 
-      // escrow_account on A should be amount  
-     // val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
-    //  assert(balanceA2 == amount), 
-       // bob balance on B should B amount
-   //   val balanceB = getBalanceIn("B", "bob", denomAB)
-   //   assert(balanceB == amount), 
-
+    ).then({
       // Normal Transfer B to C
       sendPacket("B", "C", denomInA, amount, "bob", "charlie",[])
     }
@@ -1108,12 +1086,8 @@ run DetailedHappyPathTest = {
     ).then(
       receiveAck("B") 
     ).then(all{
-      // Again same checks on B and C 
       // The chain state before starting the forwardingTransfer should be like this. 
       // Thus at the end of the test we should have the exact chain state that we see here. 
-      //val balanceA = getBalanceIn("A", "escrow_account", denomInA)
-      //assert(balanceA == amount),
-
 
       val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
@@ -1128,35 +1102,28 @@ run DetailedHappyPathTest = {
     }).then(all{
       receivePacket("C", "B") 
     }).then(all{
-      // forward_account on B should be amount // HERE ARE TOKEN TRANSFERRED FROM escrow_account to forward_account? 
-      // OR ARE TOKENS MINTED ON FORWARD ACCOUNT? 
       val balanceB2 = getBalanceIn("B", "forward_account", denomInA)
       assert(balanceB2 == amount), 
       // escrow_account on B should be 0
       val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
-      assert(balanceB2 == 0), 
-      // Manipulate Escrow Balance on Chain A. This should be sufficient to make the transfer from B -> A succed
-      // And the onRecv function on A to generate an error ack.       
-    //  setBalanceIn("A", "escrow_account", ATOM, amount-1)  
-   // }).then(
-      // The sendFungibleTokens here must succed  
+      assert(balanceB2 == 0),   
       sendPacket("B", "A", denomInA, amount, "forward_account", "alice",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", "forward_account", denomInA)
       assert(balanceB == 0),
-      //val balanceA = getBalanceIn("A", "alice", denomABC)
-      //assert(balanceA == amount),
+
       val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
       assert(balanceB2 == amount), 
 
       // Here during onRecv packet an error ack must be written.  
       // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
       // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
-      failingReceivePacket("B", "A") // This fails because sendPacket failed as depicted in the scenario1. 
+      // I'll mock the erorr. 
+      failingReceivePacket("B", "A") 
         
     }).then(
-      receiveAck("B") // Error ack is properly written here. // Refund logic properly executed on B
+      receiveAck("B") // Refund logic should be properly executed on B
     ).then(all{
       val balanceB = getBalanceIn("B", "forward_account", denomInA)
       assert(balanceB == 0), // In the case nothing to revert
@@ -1169,27 +1136,21 @@ run DetailedHappyPathTest = {
       }
        
     ).then(all {
-      // check that voucher exists on chain B
-      //val balanceB = getBalanceIn("B", "escrow_account", denomSentFromAToB)
-      //assert(balanceB == amount),
-      // check that the balance is updated on chainC
-      val balanceC = getBalanceIn("C", "charlie", denomBC)
-      assert(balanceC == amount),
 
-      // check that balance on chain B is empty
-      //val balanceB = getBalanceIn("B", "bob", denomSentFromAToB)
-      //assert(balanceB == 0),
-      //check the escrow_account balance on chain B is amount
+      // Check the final chains states are equal to the ones before starting the forwardingTransfer 
+
       val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
       assert(balanceB2 == amount),
 
-      // check that balance on chain A is empty
-      //val balanceA = getBalanceIn("A", "alice", denomInA)
-      //assert(balanceA == 0),
-      // check the escrow_account balance on chain A is amount
-      //val balanceA = getBalanceIn("A", "escrow_account", denomInA)
-      //assert(balanceA == 89),
+      val balanceB = getBalanceIn("B", "bob", denomInA)
+      assert(balanceB == 0),
 
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      assert(balanceB2 == amount), 
+
+      val balanceC = getBalanceIn("C", "charlie", denomBC)
+      assert(balanceC == amount),
+      
       // noop
       chainStates' = chainStates
       }
