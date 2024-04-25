@@ -379,7 +379,7 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
       if (movingBackAlongTrace(sentPacket.data.denom, hopElementSent)) {
           // If we are here the packet we sent out was sending as source 
           // check if the packet we received was a source token for our chain
-          if (movingBackAlongTrace(receivedPacket.data.denom, hopElementRecv)) {
+          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)) {
               // if we are here the packet we received was a source token for our chain 
               // receive sent tokens from the received escrow to the forward escrow account
               // so we must send the tokens back from the forward escrow to the original received escrow account
@@ -400,7 +400,7 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
           // in this case we burned the vouchers of the outgoing packets
           // check if the packet we received was a source token for our chain
           // in this case, the tokens were unescrowed from the reverse escrow account
-          if (movingBackAlongTrace(receivedPacket.data.denom, hopElementRecv)){
+          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)){
             // in this case we must mint the burned vouchers and send them back to the escrow account
               
             chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
