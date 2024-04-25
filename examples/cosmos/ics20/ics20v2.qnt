@@ -254,7 +254,7 @@ type ChainStateV2 = {
         else{
         
         pure val tempChainState = chainState.with("bank", bankResult.accounts)
-                                                    
+        //pure val nilAck= { success: "", errorMessage: "", packet: packet }
         (tempChainState, ack) // Here we should return nil for the ack 
       }
       }
@@ -315,6 +315,7 @@ type ChainStateV2 = {
               //pure val ack ={ success: true, errorMessage: "forwarded packet succeeded", packet: prevPacket }
               //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
               //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
+              // No Op 
               chainState
           } else {
                 // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
@@ -391,9 +392,9 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
               // receive minted vouchers and sent to the forward escrow account
               // so we must remove the vouchers from the forward escrow account and burn them
               // THIS FIX MAKE SCENARIO 3,5 TEST PASS. NEED TO INSPECT DEEPER. 
-              chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
               // Original Line
-              //chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
             }
     } else {
           // in this case we burned the vouchers of the outgoing packets
@@ -809,6 +810,8 @@ module ics20v2Test {
    * TESTS
    ***************************************************************************/
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 run DetailedHappyPathTest = {
     pure val amount = 90
 
@@ -856,6 +859,8 @@ run DetailedHappyPathTest = {
       }
     )
   }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // Tansfer happening from A to C using the forwarding path and the sendTransfer previously described. 
   // In quint we need to call twice the sendTransfer to appreciate the state changes.  
@@ -905,6 +910,8 @@ run DetailedHappyPathTest = {
   }
 
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Scenario 1 test 
   // Init function for scenario 1 
   action initScenario1 = {
     chainStates' = CHAINS.mapBy(chain => {
@@ -1051,6 +1058,7 @@ run DetailedHappyPathTest = {
     )
   }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Need to model the concept of different forward and escrow accounts
  // Init function for scenario 2 
   action initScenario2 = {
@@ -1204,7 +1212,7 @@ run DetailedHappyPathTest = {
     )
   }
 
-///////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Scenario 3 test 
 
  action initScenario3 = {
@@ -1389,7 +1397,178 @@ run DetailedHappyPathTest = {
     )
   }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Scenario 4 Test 
 
+  action initScenario4 = {
+    chainStates' = CHAINS.mapBy(chain => {
+      // All accounts are empty, except for Alice in chain A who has 100 atoms
+      //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0),"alex" -> Map(ATOM -> 0)) else Map(),
+      channels: channelCounterparties.get(chain),
+      channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      // Verify what channelForwardingAddresses should be initialized to 
+      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
+      // Start without any unprocessed packets/acknowledgements/timeouts
+      outPackets: Set(),
+      receivedButUnacknowledgedPackets: Set(),
+      inAcknowledgements: Set(),
+      inTimeouts: Set(),
+      forwardedPacket: []
+    })
+  }
+
+    run Scenario4Test = {
+    pure val amount = 90
+
+    pure val denomInA = ATOM
+    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    
+    initScenario4.then(
+      // Make sure that charlie has enough tokens on chain A. In the go test, this
+      // is implicitly done somewhere in the test environment setup.
+      setBalanceIn("A", "alice", ATOM, amount)
+    ).then(all{
+      // The chain state before starting the forwardingTransfer should be like this. 
+      // Thus at the end of the test we should have the exact chain state that we see here. 
+
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == amount),
+        
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == 0),
+      
+      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      assert(balanceA3 == 0), 
+
+      val balanceB = getBalanceIn("B", "bob", denomAB)
+      assert(balanceB == 0),
+      
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0),
+      
+      val balanceB3 = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB3 == 0), 
+
+      // Start Forwarding Transfer A -> B -> A
+      sendPacket("A", "B", denomInA, amount, "alice", "alex",[{ port: "transfer", channel: "channelToA" }])
+    }).then(all{
+      
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == 0),
+
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == amount),
+
+      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      assert(balanceA3 == 0),
+
+      // Ok Receive, Apply state changes on B 
+      receivePacket("A", "B") 
+    }).then(all{
+
+      val balanceB2 = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB2 == amount), 
+      // escrow_account on B should be 0
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0),   
+
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == 0),
+
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == amount),
+
+      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      assert(balanceA3 == 0),
+      
+      val balanceA4 = getBalanceIn("A", "alex", denomInA)
+      assert(balanceA4 == 0),
+      
+
+      sendPacket("B", "A", denomAB, amount, "forward_account", "alice",[])
+    }).then(all{
+      
+      val balanceB = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB == 0),
+
+      // Tokens get burned here 
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0), 
+
+      // Here during onRecv packet an error ack must be written.  
+      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
+      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
+      // I'll mock the erorr. 
+      // Failing Receive, Do not apply state changes on A 
+      failingReceivePacket("B", "A") 
+        
+    }).then(all{
+      
+      // No Op
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == 0), 
+
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == amount), 
+
+      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      assert(balanceA3 == 0), 
+
+      // Ack on B 
+      receiveAck("B") // Refund logic should be properly executed on A
+    }).then(all{
+
+      val balanceB = getBalanceIn("B", "bob", denomAB)
+      assert(balanceB == 0),
+      
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0),
+      
+      val balanceB3 = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB3 == 0), 
+
+      //Need to forward back the ack to revert original sendTokens on A 
+      forwardAck("B","A") // AdHoc ForwardAck function. Needed to pick the right acknw
+      }
+       
+    ).then(all {
+
+      // Check the final chains states are equal to the ones before starting the forwardingTransfer 
+
+      val balanceA = getBalanceIn("A", "alice", denomInA)
+      assert(balanceA == amount), 
+
+      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA2 == 0), // This should have been reverted to original state before start forwarding transfer. 
+      
+      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      assert(balanceA3 == 0), 
+
+      val balanceA4 = getBalanceIn("A", "alex", denomInA)
+      assert(balanceA4 == 0),
+
+      val balanceB = getBalanceIn("B", "bob", denomAB)
+      assert(balanceB == 0),
+      
+      val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
+      assert(balanceB2 == 0),
+      
+      val balanceB3 = getBalanceIn("B", "forward_account", denomAB)
+      assert(balanceB3 == 0), 
+
+
+      // noop
+      chainStates' = chainStates
+      }
+    )
+  }
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Scenario5 Test 
 // Inspiring test from ics20.qnt
 //// Test producing a failed acknowledgement:
   //
@@ -1403,6 +1582,7 @@ run DetailedHappyPathTest = {
   //    3.4 `TransferCoins` returns an error, because -- after manipulating it in (2) -- the escrow account has insufficient funds.
   //    3.5 The bank module error causes `onRecvPacket` to return a failed acknowledgement.
   //    3.6 `onAcknowledgePacket` on chain "B" re-mints the burned vouchers to Bob.
+
 
 // Scenario5 Test 
 // We want to test C->B->A with an error ack happening on B->A. Thus we want to verify everything get reverted properly 
