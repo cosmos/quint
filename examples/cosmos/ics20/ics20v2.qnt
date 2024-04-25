@@ -392,9 +392,9 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
               // receive minted vouchers and sent to the forward escrow account
               // so we must remove the vouchers from the forward escrow account and burn them
               // THIS FIX MAKE SCENARIO 3,5 TEST PASS. NEED TO INSPECT DEEPER. 
-              //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
               // Original Line
-              chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
+              //chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
             }
     } else {
           // in this case we burned the vouchers of the outgoing packets
@@ -402,8 +402,8 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
           // in this case, the tokens were unescrowed from the reverse escrow account
           if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)){
             // in this case we must mint the burned vouchers and send them back to the escrow account
-              
-            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+             chainState.bank.BurnCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount) 
+            //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
           }else{
             // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
             // So no state changes were made, and thus no reversion is necessary
