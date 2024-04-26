@@ -1,5 +1,9 @@
 # Tests
 
+[Visual representation of each testing scenario](https://excalidraw.com/#json=imWPrnjVUYGRX0ruIxjii,bWrrA-vuQx43Sd7Z-pSB2w)
+
+[State transition table of each testing scenario](https://docs.google.com/spreadsheets/d/1XCI6aNBfqDYhdOpzg0tFxaXwWCPRLaRXgiuPzvePRjk/edit#gid=2106405052)  
+
 ## Automated Test
 
 Run all tests
