@@ -368,7 +368,8 @@ type ChainStateV2 = {
 // If an error occurs further down the line, the state changes
 // on this chain must be reverted before sending back the error acknowledgement
 // to ensure atomic packet forwarding
-pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, receivedPacket: Packet): ChainState = {
+//******* IMPORTANT NOTE THAT movingBackAlongTrace returns true if sending is not source. 
+/*pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, receivedPacket: Packet): ChainState = {
  pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
  pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
  pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
@@ -383,7 +384,8 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
               // if we are here the packet we received was a source token for our chain 
               // receive sent tokens from the received escrow to the forward escrow account
               // so we must send the tokens back from the forward escrow to the original received escrow account
-              
+              //chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, 0)
+          
               chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
           }
           else {
@@ -402,16 +404,79 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
           // in this case, the tokens were unescrowed from the reverse escrow account
           if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)){
             // in this case we must mint the burned vouchers and send them back to the escrow account
-             chainState.bank.BurnCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount) 
+            //chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+             
+            chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount) 
             //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
           }else{
             // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
             // So no state changes were made, and thus no reversion is necessary
             // THIS FIX MAKE SCENARIO 2 TEST PASS but Scenario1 to Fail. NEED TO INSPECT DEEPER. 
             //chainState.bank.BurnCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+            // Latest Fix. 
+            chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
             // Original Line
             // No Op Miniting 0 Tokens 
             // With No Op SCENARIO 1 TEST PASS but Scenario 2 to Fail. NEED TO INSPECT DEEPER. 
+            //chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, 0)
+            }
+          }
+      
+      if (bankResult.success) {
+      chainState.with("bank", bankResult.accounts)
+    } else {
+      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
+      //       We treat bank failure as a noop.
+      chainState
+    }
+}
+
+*/
+// Helper Function revertInFlightChanges
+// Version without Multidenom Support 
+// revertInFlightChanges reverts the receive packet and send packet
+// that occurs in the middle chains during a packet forwarding
+// If an error occurs further down the line, the state changes
+// on this chain must be reverted before sending back the error acknowledgement
+// to ensure atomic packet forwarding
+//******* IMPORTANT - note that movingBackAlongTrace returns the opposite of isSource defined in the spec ******* 
+pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, receivedPacket: Packet): ChainState = {
+ pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
+ pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
+ pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
+ pure val hopElementRecv = {port: receivedPacket.destPort, channel: receivedPacket.destChannel}
+ // check if the packet we sent out was sending as source or not
+ // in this case we escrowed the outgoing tokens
+ pure val bankResult =
+      if (movingBackAlongTrace(sentPacket.data.denom, hopElementSent)==false) {
+          // If we are here the packet we sent out was sending as source 
+          // check if the packet we received was a source token for our chain
+          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)==false) {
+              // if we are here the packet we received was a source token for our chain 
+              // receive sent tokens from the received escrow to the forward escrow account
+              // so we must send the tokens back from the forward escrow to the original received escrow account
+              chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+          }
+          else {
+              // if we are here the packet we received was a not source token for our chain
+
+              // receive minted vouchers and sent to the forward escrow account
+              // so we must remove the vouchers from the forward escrow account and burn them
+              // Original Line
+              chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
+            }
+    } else {
+          // in this case we burned the vouchers of the outgoing packets
+          // check if the packet we received was a source token for our chain
+          // in this case, the tokens were unescrowed from the reverse escrow account
+          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)==false){
+            // in this case we must mint the burned vouchers and send them back to the escrow account
+            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
+          }else{
+            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
+            // So no state changes were made, and thus no reversion is necessary
+            // Original Line
+            // No Op Miniting 0 Tokens 
             chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, 0)
             }
           }
@@ -445,7 +510,6 @@ module ics20v2Test {
   /// chain A connects to chain B through channel "channelToB".
   /// Testing Topology: 
   // For testing, imagine the following topology between channels in chains A, B and C.
-  // PS: There should be similar channels between A and C, those are ommited in the diagram for simplicity
   // ┌───────────────────┐           ┌────────────────────────────────────┐         ┌───────────────────┐
   // │      Chain A      │           │               Chain B              │         │      Chain C      │
   // │                   │           │                                    │         │                   │
@@ -517,6 +581,37 @@ module ics20v2Test {
   def getBalanceIn(chain, account, denom) = {
     chainStates.get(chain).bank.getBalances(account).getBalance(denom)
   }
+/*
+ type ChainState = {
+    bank: Accounts,
+    channels: ChannelCounterparties,
+    channelEscrowAddresses: Channel -> Address,
+    channelForwardingAddresses: Channel -> Address, //Needed? 
+    // IBC packet handling:
+    outPackets: Set[Packet],                        // outgoing unreceived packets
+    receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
+    inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
+    inTimeouts: Set[Packet], // incoming timeouts
+    forwardedPacket: List[Packet], //packetForwardPath                                
+  }*/
+
+
+/// Gets the `account` in `chain` of `denom`.
+  def getEscrowAccount(channel) = {
+    if(channel=="channelToC") "escrow_account_c"
+    else "escrow_account_a"
+    //chainStates.get(chain).channelEscrowAddresses.get(channel)
+    //chainStates.get(chain).bank.getBalances(account).getBalance(denom)
+  }
+
+/// Gets the `account` in `chain` of `denom`.
+  def getForwardAccount(channel) = {
+    if(channel=="channelToC") "forward_account_c"
+    else "forward_account_a"
+    //chainStates.get(chain).bank.getBalances(account).getBalance(denom)
+  }
+
+
 
   /// Send a packet from `sourceChain` to `destChain`, indicating a transfer
   /// of `amount`-many tokens of `denom` from `sender` to `receiver`.
@@ -539,7 +634,27 @@ module ics20v2Test {
     chainStates' = chainStates.set(sourceChain, newSourceChainState)
   }
 
-  // Mock Function to fake an error 
+action sendForwardingPacket(sourceChain: str, destChain: str,
+                    denom: DenomTrace, amount: UINT256,
+                    sender: Address, receiver: Address, forwardingPath: ForwardingPath): bool = all {
+    // (1) Pre-condition:
+    // there is a channel between `sourceChain` and `destChain`
+    hasChannelBetween(sourceChain, destChain),
+
+    // Extract Forwarding Path 
+    // (2) Send the packet using `sendFungibleTokens`:
+    val sourceChainState = chainStates.get(sourceChain)
+    val newSourceChainState = sendFungibleTokens(sourceChainState, denom, amount,
+                                                 sender, receiver, forwardingPath, 
+                                                 "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
+                                                 0, 0)
+
+    // (3) Quint state transition:
+    chainStates' = chainStates.set(sourceChain, newSourceChainState)
+  }
+
+
+  // Mock Function to generate an error during the receive 
   action failingReceivePacket(sourceChain: str, destChain: str): bool =
     val sourceChainState = chainStates.get(sourceChain)
     all {
@@ -757,9 +872,9 @@ module ics20v2Test {
   pure val USER_ACCOUNTS = Set("alice", "bob", "charlie")
   pure val ESCROW_ACCOUNT = "escrow_account"
 
-
   // Initialize the protocol
-  action initScenario5 = {
+  // this init function must be defined to run the simulator. 
+  action init = {
     chainStates' = CHAINS.mapBy(chain => {
       bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
       channels: channelCounterparties.get(chain),
@@ -787,6 +902,8 @@ module ics20v2Test {
       receivePacket(sourceChain, destChain),
       timeoutPacket(sourceChain, destChain),
       receiveAck(sourceChain),
+      failingReceivePacket(sourceChain,destChain),
+      forwardAck(sourceChain,destChain),
       receiveTimeout(sourceChain),
     }
   }
@@ -819,7 +936,7 @@ run DetailedHappyPathTest = {
     pure val denomInA = ATOM
     pure val denomSentFromAToB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
     pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
-    initScenario5.then(
+    init.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("A", "alice", ATOM, amount)
@@ -871,7 +988,7 @@ run DetailedHappyPathTest = {
     pure val denomInA = ATOM
     pure val denomSentFromAToB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
     pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
-    initScenario5.then(
+    init.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("A", "alice", ATOM, amount)
@@ -917,11 +1034,11 @@ run DetailedHappyPathTest = {
     chainStates' = CHAINS.mapBy(chain => {
       // All accounts are empty, except for Alice in chain A who has 100 atoms
       //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0), "escrow_account" -> Map(ATOM -> 0)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0)) else if (chain == "B") Map("bob" -> Map(ATOM -> 0)) else Map(),
       channels: channelCounterparties.get(chain),
-      channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      channelEscrowAddresses: if (chain == "B") Map("channelToA" -> "escrow_account_a","channelToC" -> "escrow_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
-      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
+      channelForwardingAddresses: if (chain == "B") Map("channelToA" -> "forward_account_a","channelToC" -> "forward_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
       // Start without any unprocessed packets/acknowledgements/timeouts
       outPackets: Set(),
       receivedButUnacknowledgedPackets: Set(),
@@ -931,6 +1048,7 @@ run DetailedHappyPathTest = {
     })
   }
 
+// 
 // Scenario 1 test 
     run Scenario1Test = {
     pure val amount = 90
@@ -956,7 +1074,7 @@ run DetailedHappyPathTest = {
        val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), 
      
       receivePacket("B", "C") 
@@ -965,7 +1083,7 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
@@ -979,7 +1097,7 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
@@ -991,8 +1109,9 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), 
+      
       // This time token get burned 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
       assert(balanceC == 0),
@@ -1002,23 +1121,34 @@ run DetailedHappyPathTest = {
       
       receivePacket("C", "B") 
     }).then(all{
-      val balanceB2 = getBalanceIn("B", "forward_account", denomInA)
-      assert(balanceB2 == amount), 
+      
+      val balanceBt2 = getBalanceIn("B", getForwardAccount("channelToC"), denomInA)
+      assert(balanceBt2 == amount), 
+
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      assert(balanceB2 == 0), 
+
       // escrow_account on B should be 0
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == 0),   
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      assert(balanceB3 == 0),   
 
       val balanceC = getBalanceIn("C", "escrow_account", denomBC)
       assert(balanceC == 0),  
 
-      sendPacket("B", "A", denomInA, amount, "forward_account", "alice",[])
+      sendPacket("B", "A", denomInA, amount, getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
-      val balanceB = getBalanceIn("B", "forward_account", denomInA)
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
       assert(balanceB2 == amount), 
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      assert(balanceB3 == 0), 
 
       // Here during onRecv packet an error ack must be written.  
       // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
@@ -1029,13 +1159,16 @@ run DetailedHappyPathTest = {
     }).then(
       receiveAck("B") // Refund logic should be properly executed on B
     ).then(all{
-      val balanceB = getBalanceIn("B", "forward_account", denomInA)
-      assert(balanceB == 0), // In the case nothing to revert
+
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      assert(balanceB == 0), 
       
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
-      
-      //receiveAck("C")
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      assert(balanceB3 == 0), // In the case nothing to revert
+            
       forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
       }
        
@@ -1046,12 +1179,28 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomInA)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
       assert(balanceB2 == amount), 
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      assert(balanceB3 == 0), 
+
+      val balanceB4 = getBalanceIn("B", getForwardAccount("channelToC"), denomInA)
+      assert(balanceB4 == 0), 
+
+      val balanceB5 = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      assert(balanceB5 == 0), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
       assert(balanceC == amount),
       
+      val balanceC2 = getBalanceIn("C", "forward_account", denomBC)
+      assert(balanceC2 == 0),
+      
+      val balanceC3 = getBalanceIn("C", "forward_account", denomBC)
+      assert(balanceC3 == 0),
+      
+
       // noop
       chainStates' = chainStates
       }
@@ -1067,10 +1216,10 @@ run DetailedHappyPathTest = {
       //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
       bank: if (chain == "C") Map("charlie" -> Map(ATOM -> 0)) else Map(),
       channels: channelCounterparties.get(chain),
-      channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      channelEscrowAddresses: if (chain == "B") Map("channelToA" -> "escrow_account_a","channelToC" -> "escrow_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
-      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
-      // Start without any unprocessed packets/acknowledgements/timeouts
+      channelForwardingAddresses: if (chain == "B") Map("channelToA" -> "forward_account_a","channelToC" -> "forward_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
+       // Start without any unprocessed packets/acknowledgements/timeouts
       outPackets: Set(),
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
@@ -1097,10 +1246,10 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomCB)
       assert(balanceB == 0),
       
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomCB)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomCB)
       assert(balanceB2 == 0),
       
-      val balanceB3 = getBalanceIn("B", "forward_account", denomCB)
+      val balanceB3 = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
       assert(balanceB3 == 0), 
 
       val balanceC = getBalanceIn("C", "charlie", denomInA)
@@ -1128,10 +1277,10 @@ run DetailedHappyPathTest = {
       receivePacket("C", "B") 
     }).then(all{
 
-      val balanceB2 = getBalanceIn("B", "forward_account", denomCB)
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
       assert(balanceB2 == amount), 
       // escrow_account on B should be 0
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomCB)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
       assert(balanceB2 == 0),   
 
       val balanceC = getBalanceIn("C", "charlie", denomInA)
@@ -1144,13 +1293,13 @@ run DetailedHappyPathTest = {
       assert(balanceC3 == 0),
       
 
-      sendPacket("B", "A", denomCB, amount, "forward_account", "alice",[])
+      sendPacket("B", "A", denomCB, amount, getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
-      val balanceB = getBalanceIn("B", "forward_account", denomCB)
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomCB)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
       assert(balanceB2 == amount), 
 
       // Here during onRecv packet an error ack must be written.  
@@ -1170,16 +1319,25 @@ run DetailedHappyPathTest = {
       val balanceA3 = getBalanceIn("A", "forward_account", denomBA)
       assert(balanceA3 == 0), 
 
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
+      assert(balanceB == 0),
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
+      assert(balanceB2 == amount), 
 
       receiveAck("B") // Refund logic should be properly executed on B
     }).then(all{
-      val balanceB = getBalanceIn("B", "forward_account", denomCB)
-      assert(balanceB == 0), 
 
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomCB)
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
+      assert(balanceB == 0),
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomCB)
       assert(balanceB2 == 0), // This should have been reverted to original state before start forwarding transfer. 
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
+      assert(balanceB3 == 0), // This should have been reverted to original state before start forwarding transfer. 
       
-      //receiveAck("C")
+
       forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
       }
        
@@ -1190,12 +1348,18 @@ run DetailedHappyPathTest = {
       val balanceB = getBalanceIn("B", "bob", denomCB)
       assert(balanceB == 0),
       
-      val balanceB2 = getBalanceIn("B", "escrow_account", denomCB)
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToA"), denomCB)
       assert(balanceB2 == 0),
-      
-      val balanceB3 = getBalanceIn("B", "forward_account", denomCB)
-      assert(balanceB3 == 0), 
 
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToC"), denomCB)
+      assert(balanceB3 == 0), // This should have been reverted to original state before start forwarding transfer. 
+      
+      val balanceB4 = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
+      assert(balanceB4 == 0),
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
+      assert(balanceB3 == 0), // This should have been reverted to original state before start forwarding transfer. 
+      
       val balanceC = getBalanceIn("C", "charlie", denomInA)
       assert(balanceC == amount),
         
@@ -1388,6 +1552,9 @@ run DetailedHappyPathTest = {
       val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
       assert(balanceB2 == amount), 
 
+      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      assert(balanceA == amount), 
+
       val balanceC = getBalanceIn("C", "charlie", denomABC)
       assert(balanceC == amount),
       
@@ -1486,7 +1653,7 @@ run DetailedHappyPathTest = {
       assert(balanceA4 == 0),
       
 
-      sendPacket("B", "A", denomAB, amount, "forward_account", "alice",[])
+      sendPacket("B", "A", denomAB, amount, "forward_account", "alex",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", "forward_account", denomAB)
@@ -1595,6 +1762,24 @@ run DetailedHappyPathTest = {
 // To checkout the full execution trace run this test with the following command: 
 // quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
 //
+
+ // Initialize the protocol
+  action initScenario5 = {
+    chainStates' = CHAINS.mapBy(chain => {
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
+      channels: channelCounterparties.get(chain),
+      channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      // Verify what channelForwardingAddresses should be initialized to 
+      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
+      // Start without any unprocessed packets/acknowledgements/timeouts
+      outPackets: Set(),
+      receivedButUnacknowledgedPackets: Set(),
+      inAcknowledgements: Set(),
+      inTimeouts: Set(),
+      forwardedPacket: []
+    })
+  }
+
   run Scenario5Test = {
     pure val amount = 90
 
@@ -1719,4 +1904,18 @@ run DetailedHappyPathTest = {
   }
 
 
+
+/* ***************************************************************************
+   * INVARIANTS
+   * **************************************************************************/
+
+  // To check in random simulator:
+  // $ quint run --main=ics20Test --invariant=BalanceNonNegative ics20.qnt
+ // quint run --max-samples=100 --max-steps=6 --invariant=BalanceNonNegative --main=ics20v2Test ics20v2.qnt --verbosity=2
+  // The balance of all denominations in all accounts is always non-negative.
+  val BalanceNonNegative = CHAINS.forall(chain =>
+      USER_ACCOUNTS.forall(addr =>
+        chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) >= 0
+    )
+  )
 }
