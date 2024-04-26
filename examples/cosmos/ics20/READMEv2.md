@@ -1,14 +1,26 @@
 # Tests
 
-## Automated Test with simulator
+## Automated Test
 
-Run
+Run all tests
 
 ```sh
 quint test --main=ics20v2Test ics20v2.qnt --verbosity=2
 ```
 
-Note that --verbosity=3 is not working. Neither it works for ics20.qnt.
+To run a specific test change --match=Scenario1Test number from 1 to 5
+
+```sh
+quint test --main=ics20v2Test ics20v2.qnt --verbosity=3 --match=Scenario1Test
+```
+
+## Invariant Checker
+
+To run a specific invariant check change --invariant=BalanceNonNegative to other invariant names
+
+```sh
+quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNonNegative --main=ics20v2Test ics20v2.qnt --verbosity=2
+```
 
 ## Interactive Test Play Steps
 
