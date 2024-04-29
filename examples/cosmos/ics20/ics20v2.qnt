@@ -1,11 +1,14 @@
 // -*- mode: Bluespec; -*-
 
 /**
- * A specification of the ICS20 fungible token transfer protocol:
- * https://github.com/cosmos/ibc/tree/main/spec/app/ics-020-fungible-token-transfer
- *
- * Gabriela Moreira and Thomas Pani, Informal Systems, 2023
+ * The ics20v2 specification is an extension of the ics20 with support for multidenom and token forwarding functionalities. 
+ * Many thanks to our colleagues Gabriela Moreira and Thomas Pani, Informal Systems, 2023 
+ * for providing the ground base of this spec in ics20.qnt. 
+ *   
+ * Stefano Angieri, Carlos Rodriguez, Aditya Sripal, Interchain Foundation, 2024
+ * 
  */
+
 module ics20v2 {
   import base.* from "./base"
   import bank.* from "./bank"
@@ -59,7 +62,7 @@ module ics20v2 {
 
  // NOT USED TYPES. 
  //These type will be useful to define the multi-denom which is not currently supported 
-  // Ics20v2 types
+  // Ics20v2 types  
   type Token = {
   denom: DenomTrace,
   //trace: str, contained in DenomTrace which has baseDenom and Path   
@@ -68,11 +71,11 @@ module ics20v2 {
 
    // IBC packetV2 types
   type FungibleTokenDataV2= {
-    Tokens: List[Token], 
+    tokens: List[Token], 
     sender: Address,
     receiver: Address,
     memo: str,
-    forwardingPath: List[str]
+    forwardingPath: ForwardingPath
   }
 
   type PacketV2 = {
@@ -89,15 +92,18 @@ module ics20v2 {
     packet: PacketV2  // the acknowledged packet
   }
 
-type ChainStateV2 = {
+  type ChainStateV2 = {
     bank: Accounts,
     channels: ChannelCounterparties,
     channelEscrowAddresses: Channel -> Address,
+    channelForwardingAddresses: Channel -> Address, 
     // IBC packet handling:
     outPackets: Set[PacketV2],                        // outgoing unreceived packets
     receivedButUnacknowledgedPackets: Set[PacketV2],  // received but unacknowledged packets
     inAcknowledgements: Set[FungibleTokenPacketAcknowledgementV2],  // incoming acknowledgements
-    inTimeouts: Set[PacketV2],                                      // incoming timeouts
+    inTimeouts: Set[PacketV2], // incoming timeouts
+    forwardedPacket: List[PacketV2], //packetForwardPath                                
+    receivedTokens: List[Token],
   }
 
   /****************************************************************************
@@ -112,6 +118,10 @@ type ChainStateV2 = {
   /// the channel `C` connects to, in the other chain.
   pure def getCounterparty(chainState: ChainState, sourceChannel: Channel): Channel = {
     chainState.channels.get(sourceChannel)
+  }
+
+  pure def getCounterpartyV2(chainStateV2: ChainStateV2, sourceChannel: Channel): Channel = {
+    chainStateV2.channels.get(sourceChannel)
   }
 
   /****************************/
@@ -155,6 +165,143 @@ type ChainStateV2 = {
     }
     
   }
+
+// Helper function for multidenom support 
+
+  pure def getNextToken(Tokens: List[Token]): (DenomTrace, UINT256, List[Token]) = {
+    pure val headElement = Tokens.head()  // Get the first element
+    pure val nextDenom  = headElement.denom   // Get nextDenom
+    pure val nextAmount = headElement.amount   // Get nextAmount
+    pure val newTokenList= Tokens.tail() // Delete first element of the Token list 
+    (nextDenom,nextAmount,newTokenList)
+
+  }
+
+// SendFungibleTokensBankV2 supporting multidenom and token forwarding
+// To model multidenom we will use 3 as an upper bound on the number of tokens that can be forwarded in a single tx. 
+// We choose 3 because is the number the will allow us to test all the possible combination. 
+// Indeed an error can occur either in the first token, in a the middle hop or in the last token. 
+// Therefore a list of tokens[0,1,2,..n] can be proven correct using a list of tokens[0,1,2].
+// Indeed any sequence of logic errors that could affect a larger set of tokens in a transaction sequence can be 
+// effectively simulated and with a combination of these 3 scenario. This assumption rests on the principle 
+// that error patterns, regardless of the list size, will manifest similarly whether in a small or 
+// large batch of tokens. By focusing on the first, middle, and last tokens within a transaction of three tokens,
+// we can exhaustively test and account for error scenarios that might occur at any position in a larger sequence.
+// If our transaction handling logic is sound for these three cases, we can infer that it will behave 
+// correctly with more tokens due to the predictable, systematic nature of the errors and the
+// transaction process itself.
+// 
+// To ensure atomicity execution, we work on the token list without using fold function.
+
+ pure def sendFungibleTokensV2(chainStateV2: ChainStateV2, tokens012: List[Token], 
+                              sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
+                              timeoutHeight: Height, timeoutTimestamp: uint64): ChainStateV2 = {
+      
+      // Compute First Step Bank Result
+      pure val bankResult0 = 
+
+          if(tokens012!=[]){
+            pure val token0= getNextToken(tokens012)
+            pure val denom0 = token0._1
+            pure val amount0 = token0._2
+          
+            if (movingBackAlongTrace(denom0, { port: sourcePort, channel: sourceChannel })) {
+              // burn vouchers
+              (chainStateV2.bank).BurnCoins(sender, denom0, amount0)
+            } else {
+              // escrow tokens
+              pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
+              chainStateV2.bank.TransferCoins(sender, escrowAccount, denom0, amount0)
+              } 
+          }
+          // No Token to forward
+          else {({success: false, accounts: chainStateV2.bank})}
+      
+      // Retrieve remaining token list elements
+      pure val tokens12 = {      
+         if(tokens012!=[]){
+         pure val token12= getNextToken(tokens012)
+         token12._3
+         } else []
+      }
+
+    // Compute Middle Step Bank Result
+      pure val bankResult1 = 
+        if (bankResult0.success and tokens12!=[]) {
+            pure val token1= getNextToken(tokens12)
+            pure val denom1 = token1._1
+            pure val amount1 = token1._2
+
+          if (movingBackAlongTrace(denom1, { port: sourcePort, channel: sourceChannel })) {
+              // burn vouchers
+              (chainStateV2.bank).BurnCoins(sender, denom1, amount1)
+              } else {
+                // escrow tokens
+                pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
+                chainStateV2.bank.TransferCoins(sender, escrowAccount, denom1, amount1)
+              }
+          }
+          // If no more tokens to forward, propagate the previous bank result. 
+          // If there was an error in the first step propagate the first bank result error. 
+          else bankResult0
+
+        // Retrieve remaining token list elements
+      pure val tokens2 = {      
+         if(tokens12!=[]){
+         pure val token2= getNextToken(tokens12)
+         token2._3
+         } else []
+      }
+
+    // Compute Last Step Bank Result
+    pure val finalBankResult = 
+        
+        if (bankResult1.success and tokens2!=[]) {
+        pure val token2= getNextToken(tokens2)
+        pure val denom2 = token2._1
+        pure val amount2 = token2._2
+        
+        if (movingBackAlongTrace(denom2, { port: sourcePort, channel: sourceChannel })) {
+              // burn vouchers
+              (chainStateV2.bank).BurnCoins(sender, denom2, amount2)
+              } else {
+                // escrow tokens
+                pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
+                chainStateV2.bank.TransferCoins(sender, escrowAccount, denom2, amount2)
+              }
+        }
+        // If no more token to forward and previous result == success --> propagate the middle step result
+        else if (bankResult1.success) bankResult1
+        // Otherwise propagate the bankResult 0
+              else bankResult0 
+
+// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
+// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
+    
+    
+    if (finalBankResult.success) {
+
+      // Manipulate Data to be V2 data 
+      pure val data = { tokens: tokens012, sender: sender, receiver: receiver, memo: "", forwardingPath: forwardingPath }
+
+      // handler.sendPacket
+      pure val packetV2 = {
+        data: data,
+        sourcePort: sourcePort,
+        sourceChannel: sourceChannel,
+        destPort: "transfer",
+        destChannel: getCounterpartyV2(chainStateV2, sourceChannel),
+      }
+
+      chainStateV2.with("bank", finalBankResult.accounts)
+                  .with("outPackets", chainStateV2.outPackets.union(Set(packetV2)))
+    
+  }
+  else {
+    chainStateV2
+  }
+  }
+
 
 // Helper functions for onRecvPacket Logic execution
   pure def assignCFA(address: Address, chainState: ChainState, packet: Packet): str = {
