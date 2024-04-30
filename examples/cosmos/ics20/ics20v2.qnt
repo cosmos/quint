@@ -166,8 +166,7 @@ module ics20v2 {
     
   }
 
-// Helper function for multidenom support 
-
+// Helper function to navigate the token list for multidenom support 
   pure def getNextToken(Tokens: List[Token]): (DenomTrace, UINT256, List[Token]) = {
     pure val headElement = Tokens.head()  // Get the first element
     pure val nextDenom  = headElement.denom   // Get nextDenom
@@ -177,7 +176,7 @@ module ics20v2 {
 
   }
 
-// SendFungibleTokensBankV2 supporting multidenom and token forwarding
+// SendFungibleTokensV2 supporting multidenom and token forwarding
 // To model multidenom we will use 3 as an upper bound on the number of tokens that can be forwarded in a single tx. 
 // We choose 3 because is the number the will allow us to test all the possible combination. 
 // Indeed an error can occur either in the first token, in a the middle hop or in the last token. 
@@ -192,12 +191,11 @@ module ics20v2 {
 // transaction process itself.
 // 
 // To ensure atomicity execution, we work on the token list without using fold function.
-
  pure def sendFungibleTokensV2(chainStateV2: ChainStateV2, tokens012: List[Token], 
                               sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
                               timeoutHeight: Height, timeoutTimestamp: uint64): ChainStateV2 = {
       
-      // Compute First Step Bank Result
+      // Compute First Step Bank Result results is a tuple, bankResult and chainState
       pure val bankResult0 = 
 
           if(tokens012!=[]){
@@ -207,15 +205,18 @@ module ics20v2 {
           
             if (movingBackAlongTrace(denom0, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
-              (chainStateV2.bank).BurnCoins(sender, denom0, amount0)
+              pure val res=chainStateV2.bank.BurnCoins(sender, denom0, amount0) 
+              (res, chainStateV2.with("bank",res.accounts))
             } else {
               // escrow tokens
               pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
-              chainStateV2.bank.TransferCoins(sender, escrowAccount, denom0, amount0)
+              pure val res=chainStateV2.bank.TransferCoins(sender, escrowAccount, denom0, amount0) 
+               (res, chainStateV2.with("bank",res.accounts))
+              
               } 
           }
           // No Token to forward
-          else {({success: false, accounts: chainStateV2.bank})}
+          else {({success: false, accounts: chainStateV2.bank}, chainStateV2)}
       
       // Retrieve remaining token list elements
       pure val tokens12 = {      
@@ -227,18 +228,22 @@ module ics20v2 {
 
     // Compute Middle Step Bank Result
       pure val bankResult1 = 
-        if (bankResult0.success and tokens12!=[]) {
+        if (bankResult0._1.success and tokens12!=[]) {
             pure val token1= getNextToken(tokens12)
             pure val denom1 = token1._1
             pure val amount1 = token1._2
 
           if (movingBackAlongTrace(denom1, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
-              (chainStateV2.bank).BurnCoins(sender, denom1, amount1)
+              //(chainStateV2.bank).BurnCoins(sender, denom1, amount1)
+              pure val res=bankResult0._2.bank.BurnCoins(sender, denom1, amount1) 
+               (res, chainStateV2.with("bank",res.accounts))
+              
               } else {
                 // escrow tokens
                 pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
-                chainStateV2.bank.TransferCoins(sender, escrowAccount, denom1, amount1)
+                pure val res= bankResult0._2.bank.TransferCoins(sender, escrowAccount, denom1, amount1)
+                (res, chainStateV2.with("bank",res.accounts))
               }
           }
           // If no more tokens to forward, propagate the previous bank result. 
@@ -256,22 +261,24 @@ module ics20v2 {
     // Compute Last Step Bank Result
     pure val finalBankResult = 
         
-        if (bankResult1.success and tokens2!=[]) {
+        if (bankResult1._1.success and tokens2!=[]) {
         pure val token2= getNextToken(tokens2)
         pure val denom2 = token2._1
         pure val amount2 = token2._2
         
         if (movingBackAlongTrace(denom2, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
-              (chainStateV2.bank).BurnCoins(sender, denom2, amount2)
+              pure val res= (bankResult1._2.bank).BurnCoins(sender, denom2, amount2)
+              (res, chainStateV2.with("bank",res.accounts))
               } else {
                 // escrow tokens
                 pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
-                chainStateV2.bank.TransferCoins(sender, escrowAccount, denom2, amount2)
+                pure val res=bankResult1._2.bank.TransferCoins(sender, escrowAccount, denom2, amount2)
+                (res, chainStateV2.with("bank",res.accounts))
               }
         }
         // If no more token to forward and previous result == success --> propagate the middle step result
-        else if (bankResult1.success) bankResult1
+        else if (bankResult1._1.success) bankResult1
         // Otherwise propagate the bankResult 0
               else bankResult0 
 
@@ -279,7 +286,7 @@ module ics20v2 {
 // Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
     
     
-    if (finalBankResult.success) {
+    if (finalBankResult._1.success) {
 
       // Manipulate Data to be V2 data 
       pure val data = { tokens: tokens012, sender: sender, receiver: receiver, memo: "", forwardingPath: forwardingPath }
@@ -293,7 +300,7 @@ module ics20v2 {
         destChannel: getCounterpartyV2(chainStateV2, sourceChannel),
       }
 
-      chainStateV2.with("bank", finalBankResult.accounts)
+      chainStateV2.with("bank", finalBankResult._1.accounts)
                   .with("outPackets", chainStateV2.outPackets.union(Set(packetV2)))
     
   }
@@ -310,7 +317,25 @@ module ics20v2 {
     }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
     }
 
+  // Helper functions for onRecvPacket Logic execution
+  pure def assignCFAv2(address: Address, chainState: ChainStateV2, packet: PacketV2): str = {
+    if(chainState.channelForwardingAddresses.get(packet.destChannel)==""){
+        (address) // Pass in MOCK ADDRESS or WRITE NEW ADDRESS FUNCTION  
+    }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
+    }
+
   pure def assignRecvAddress(FPexists: bool, packet: Packet, address: Address): (str,str) = {
+    if(FPexists){
+        pure val receiver = address 
+        pure val finalReceiver = packet.data.receiver
+        (receiver,finalReceiver)
+    } else{
+        pure val receiver = packet.data.receiver
+        (receiver,"")
+    }
+  }
+
+    pure def assignRecvAddressV2(FPexists: bool, packet: PacketV2, address: Address): (str,str) = {
     if(FPexists){
         pure val receiver = address 
         pure val finalReceiver = packet.data.receiver
@@ -338,6 +363,8 @@ module ics20v2 {
   /// `onRecvPacket` should return an acknowledgment, but it also has to update
   /// the chain state, so the return type is the updated value for the chain
   /// state and the acknowledgment
+
+ // onRecv logic supporting multidenom
   pure def onRecvPacket(chainState: ChainState, packet: Packet): (ChainState, FungibleTokenPacketAcknowledgement) = {
     pure val data = packet.data
     
@@ -354,6 +381,8 @@ module ics20v2 {
     pure val newDenom = updateTrace(movingBack, data.denom, { port: packet.destPort, channel: packet.destChannel })
 
     // result is a pair of 1. a BankResult and 2. an error message that is used in case BankResult.success = false
+    
+    
     pure val result = if (movingBack) {
       // unescrow tokens to receiver
       pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.destChannel)
@@ -380,6 +409,10 @@ module ics20v2 {
     if(ack.success==false){
       (chainState,ack)
     }
+
+
+    // THIS SHOULD BE EXECUTED ON THE END OF Multidenom logic. 
+    // 
     // Otherwise proceed with token forwarding logic. 
     else {
       if(data.forwardingPath!=[]){
@@ -407,7 +440,166 @@ module ics20v2 {
       }
     
   }
-  
+
+// ON RECVIVE PACKET V2 
+  pure def onRecvPacketV2(chainState: ChainStateV2, packet: PacketV2): (ChainStateV2, FungibleTokenPacketAcknowledgementV2) = {
+    pure val data = packet.data
+    pure val tokens012= data.tokens
+    // Addresses assignment. Helper functions define spec logic for assignment 
+    pure val channelForwardingAddress= assignCFAv2("forward_account", chainState, packet)
+    pure val addressTuple=assignRecvAddressV2(data.forwardingPath!=[],packet, channelForwardingAddress)
+    pure val receiver = addressTuple._1
+    pure val finalReceiver = addressTuple._2 
+    
+    // Note that for quint is better not the preconstruct a succesfull ack 
+    // but rather to assign it to true of false when needed
+    
+    // Compute First Step Bank Result
+      pure val bankResult0 = 
+          if(tokens012!=[]){
+            pure val token0= getNextToken(tokens012)
+            pure val denom0 = token0._1
+            pure val amount0 = token0._2
+            
+            // HERE PLAY WITH MULTIDENOM LOGIC 
+            pure val movingBack = movingBackAlongTrace(denom0, { port: packet.sourcePort, channel: packet.sourceChannel })
+            pure val newDenom = updateTrace(movingBack, denom0, { port: packet.destPort, channel: packet.destChannel })
+
+            // result is a pair of 1. a BankResult and 2. an error message that is used in case BankResult.success = false
+            if (movingBack) {
+            // unescrow tokens to receiver
+            pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.destChannel)
+            pure val bankResult = chainState.bank.TransferCoins(escrowAccount, receiver, newDenom, amount0)  
+            
+            (bankResult, "transfer coins failed", chainState.with("bank",bankResult.accounts))
+            } else {
+                // mint vouchers to receiver
+                pure val bankResult = chainState.bank.MintCoins(receiver, newDenom, amount0)
+
+                (bankResult, "mint coins failed",chainState.with("bank",bankResult.accounts))
+              }
+            } else {
+              // No Token to receive
+              pure val bankResult = {success: false, accounts: chainState.bank}
+              (bankResult, "receive failed",chainState) 
+            }
+      //pure val bankResult0 = Result0._1
+      // Retrieve remaining token list elements
+      pure val tokens12 = {      
+         if(tokens012!=[]){
+         pure val token12= getNextToken(tokens012)
+         token12._3
+         } else []
+      }
+
+    // Compute Middle Step Bank Result
+      pure val bankResult1 = 
+        if (bankResult0._1.success and tokens12!=[]) {
+            pure val token1= getNextToken(tokens12)
+            pure val denom1 = token1._1
+            pure val amount1 = token1._2
+            
+            // HERE PLAY WITH MULTIDENOM LOGIC 
+            pure val movingBack = movingBackAlongTrace(denom1, { port: packet.sourcePort, channel: packet.sourceChannel })
+            pure val newDenom = updateTrace(movingBack, denom1, { port: packet.destPort, channel: packet.destChannel })
+
+            // result is a pair of 1. a BankResult and 2. an error message that is used in case BankResult.success = false
+            if (movingBack) {
+            // unescrow tokens to receiver
+            //pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.destChannel)
+            //pure val bankResult = chainState.bank.TransferCoins(escrowAccount, receiver, newDenom, amount1)  
+            pure val escrowAccount = bankResult0._3.channelEscrowAddresses.get(packet.destChannel)
+            pure val bankResult = bankResult0._3.bank.TransferCoins(escrowAccount, receiver, newDenom, amount1)  
+            
+            (bankResult, "transfer coins failed", chainState.with("bank",bankResult.accounts))
+            } else {
+                // mint vouchers to receiver
+                pure val bankResult = bankResult0._3.bank.MintCoins(receiver, newDenom, amount1)
+
+                (bankResult, "mint coins failed",chainState.with("bank",bankResult.accounts))
+              }
+            } 
+          // If no more tokens to receive, propagate the previous bank result. 
+          // If there was an error in the first step propagate the first bank result error. 
+          else bankResult0
+
+        // Retrieve remaining token list elements
+      pure val tokens2 = {      
+         if(tokens12!=[]){
+         pure val token2= getNextToken(tokens12)
+         token2._3
+         } else []
+      }
+
+    // Compute Last Step Bank Result
+    pure val finalBankResult = 
+        
+        if (bankResult1._1.success and tokens2!=[]) {
+        pure val token2= getNextToken(tokens2)
+        pure val denom2 = token2._1
+        pure val amount2 = token2._2
+
+        pure val movingBack = movingBackAlongTrace(denom2, { port: packet.sourcePort, channel: packet.sourceChannel })
+        pure val newDenom = updateTrace(movingBack, denom2, { port: packet.destPort, channel: packet.destChannel })
+
+        // result is a pair of 1. a BankResult and 2. an error message that is used in case BankResult.success = false
+        if (movingBack) {
+        // unescrow tokens to receiver
+          pure val escrowAccount = bankResult1._3.channelEscrowAddresses.get(packet.destChannel)
+          pure val bankResult = bankResult1._3.bank.TransferCoins(escrowAccount, receiver, newDenom, amount2)  
+            
+          (bankResult, "transfer coins failed", chainState.with("bank",bankResult.accounts))
+          } else {
+            // mint vouchers to receiver
+            pure val bankResult = bankResult1._3.bank.MintCoins(receiver, newDenom, amount2)
+
+                (bankResult, "mint coins failed",chainState.with("bank",bankResult.accounts))
+              }
+            }  
+       
+        // If no more token to forward and previous result == success --> propagate the middle step result
+        else if (bankResult1._1.success) bankResult1
+        // Otherwise propagate the bankResult 0
+              else bankResult0 
+
+    
+    pure val ack = if (finalBankResult._1.success) {
+      { success: true, errorMessage: "", packet: packet }
+    } else {
+      { success: false, errorMessage: finalBankResult._2, packet: packet }
+    }
+
+    if(ack.success==false){
+      (chainState,ack)
+    }
+    // Otherwise proceed with token forwarding logic. 
+    else {
+      if(data.forwardingPath!=[]){
+
+        pure val tempChainState = chainState.with("bank", finalBankResult._1.accounts)
+
+        pure val nextStuff=getNextPortChannel(data.forwardingPath)
+        pure val nextPort=nextStuff._1
+        pure val nextChannel=nextStuff._2
+        pure val newForwardingPath=nextStuff._3
+
+        pure val newTempChainState = sendFungibleTokensV2(tempChainState, data.tokens, 
+                              receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
+                              10,10) // Which Timeout?  
+        // store packet for future sending ack
+        pure val newChainState = newTempChainState.with("forwardedPacket", [packet])
+        (newChainState,ack)
+      }
+        else{
+        
+        pure val tempChainState = chainState.with("bank", finalBankResult._1.accounts)
+        //pure val nilAck= { success: "", errorMessage: "", packet: packet }
+        (tempChainState, ack) // Here we should return nil for the ack 
+      }
+      }
+    
+  }
+
   /// Refund tokens from a token transfer initiated by `packet`.
   ///
   /// Should be called if the token transfer fails on the receiver chain
@@ -575,7 +767,7 @@ module ics20v2Test {
 
   /// Map from chain identifiers to their state
   var chainStates: str -> ChainState
-
+  var chainStatesV2: str -> ChainStateV2
   /// Map from chain identifiers to a map of the chain identifiers it can
   /// communicate with and the channel to be used to send packets. For example,
   /// chain A connects to chain B through channel "channelToB".
@@ -639,6 +831,16 @@ module ics20v2Test {
     channelCounterparties.get(sourceChain).get(packet.sourceChannel) == packet.destChannel
   }
 
+    /// Return true iff there is a channel from `sourceChain` to `destChain` defined in `CHANNEL_TOPOLOGY`
+  /// that corresponds to the channel endpoints of `packet`.
+  pure def isTravelingBetweenV2(packet: PacketV2, sourceChain: str, destChain: str): bool = all {
+    // there is a channel between `sourceChain` and `destChain`
+    hasChannelBetween(sourceChain, destChain),
+    // packet endpoints correspond to channel ends
+    channelCounterparties.get(sourceChain).has(packet.sourceChannel),
+    channelCounterparties.get(sourceChain).get(packet.sourceChannel) == packet.destChannel
+  }
+
   /* Helper operators to manipulate bank state */
   /// Sets the balance of `account` in `chain` to `amount` of `denom`.
   action setBalanceIn(chain, account, denom, amount) = {
@@ -647,9 +849,20 @@ module ics20v2Test {
     )
   }
 
+  action setBalanceInV2(chain, account, denom, amount) = {
+    chainStatesV2' = chainStatesV2.setBy(chain, state =>
+      state.with("bank", state.bank.setBy(account, balances => balances.set(denom, amount)))
+    )
+  }
   /// Gets the balance of `account` in `chain` of `denom`.
   def getBalanceIn(chain, account, denom) = {
     chainStates.get(chain).bank.getBalances(account).getBalance(denom)
+  }
+
+
+  /// Gets the balance of `account` in `chain` of `denom`.
+  def getBalanceInV2(chain, account, denom) = {
+    chainStatesV2.get(chain).bank.getBalances(account).getBalance(denom)
   }
 
 /// Gets the `escrow_account` a or c for the chain B.
@@ -689,8 +902,7 @@ module ics20v2Test {
     chainStates' = chainStates.set(sourceChain, newSourceChainState)
   }
 
-action sendForwardingPacket(sourceChain: str, destChain: str,
-                    denom: DenomTrace, amount: UINT256,
+action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
                     sender: Address, receiver: Address, forwardingPath: ForwardingPath): bool = all {
     // (1) Pre-condition:
     // there is a channel between `sourceChain` and `destChain`
@@ -698,14 +910,13 @@ action sendForwardingPacket(sourceChain: str, destChain: str,
 
     // Extract Forwarding Path 
     // (2) Send the packet using `sendFungibleTokens`:
-    val sourceChainState = chainStates.get(sourceChain)
-    val newSourceChainState = sendFungibleTokens(sourceChainState, denom, amount,
+    val sourceChainState = chainStatesV2.get(sourceChain)
+    val newSourceChainState = sendFungibleTokensV2(sourceChainState, tokens,
                                                  sender, receiver, forwardingPath, 
                                                  "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
                                                  0, 0)
-
     // (3) Quint state transition:
-    chainStates' = chainStates.set(sourceChain, newSourceChainState)
+    chainStatesV2' = chainStatesV2.set(sourceChain, newSourceChainState)
   }
 
 
@@ -794,6 +1005,47 @@ action sendForwardingPacket(sourceChain: str, destChain: str,
         
         // (5) Quint state transition:
         chainStates' = chainStates
+                          .set(destChain, newDestChainState)
+                          .set(sourceChain, newSourceChainState)
+      }
+    }
+
+// Receive packet v2
+  action receivePacketV2(sourceChain: str, destChain: str): bool =
+    val sourceChainState = chainStatesV2.get(sourceChain)
+    all {
+      // (1) Pre-condition:
+      // there is a channel between `sourceChain` and `destChain`
+      hasChannelBetween(sourceChain, destChain),
+      // there is an unreceived packet traveling from `sourceChain` to `destChain`
+      sourceChainState.outPackets.exists(packet => packet.isTravelingBetweenV2(sourceChain, destChain)),
+
+      // (2) Non-deterministically pick a packet from `sourceChain` to receive on `destChain`:
+      nondet packet = sourceChainState.outPackets
+                                  .filter(p => p.isTravelingBetweenV2(sourceChain, destChain))
+                                  .oneOf()
+      all {
+        // (3) Compute updated destination chain state: call `onRecvPacket` callback:
+        val recvResult = onRecvPacketV2(chainStatesV2.get(destChain), packet)
+        val newDestChainState = recvResult._1
+        val acknowledgement   = recvResult._2
+
+        // (4) Compute updated source chain state:
+        // Update packet sets, moving `packet` from `outPackets` to `receivedButUnacknowledgedPackets`
+        // (this simulates ICS 4 exactly-once packet delivery)
+        val newSourceChainOutPackets = sourceChainState.outPackets.exclude(Set(packet))
+        val newSourceChainUnackPackets = sourceChainState.receivedButUnacknowledgedPackets.union(Set(packet))
+        // Update set `inAcknowledgements` to include the sent but (yet) unprocessed `acknowledgement`
+        val newSourceChainInAcknowledgements = sourceChainState.inAcknowledgements.union(Set(acknowledgement))
+        // Update source chain state with new packet/acknowledgement sets
+        
+        val newSourceChainState   = sourceChainState
+                                          .with("outPackets", newSourceChainOutPackets)
+                                          .with("receivedButUnacknowledgedPackets", newSourceChainUnackPackets)
+                                          .with("inAcknowledgements", newSourceChainInAcknowledgements)
+        
+        // (5) Quint state transition:
+        chainStatesV2' = chainStatesV2
                           .set(destChain, newDestChainState)
                           .set(sourceChain, newSourceChainState)
       }
@@ -926,6 +1178,8 @@ action sendForwardingPacket(sourceChain: str, destChain: str,
     }
 
   pure val ATOM = toDenom("atom")
+  pure val OSMO = toDenom("osmo")
+  pure val ETH = toDenom("eth")
   pure val USER_ACCOUNTS = Set("alice", "bob", "charlie")
   pure val ESCROW_ACCOUNT = "escrow_account"
 
@@ -981,7 +1235,7 @@ action sendForwardingPacket(sourceChain: str, destChain: str,
     )
 
   /****************************************************************************
-   * TESTS
+   * TESTS For V1+Forwarding
    ***************************************************************************/
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1932,6 +2186,118 @@ run DetailedHappyPathTest = {
 
       // noop
       chainStates' = chainStates
+      }
+    )
+  }
+
+
+  /****************************************************************************
+   * TESTS For V2 : Multidenom + Forwarding
+   ***************************************************************************/
+
+  action initV2 = {
+    chainStatesV2' = CHAINS.mapBy(chain => {
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 10, OSMO ->10, ETH ->10)) else Map(),
+      channels: channelCounterparties.get(chain),
+      channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
+      // Verify what channelForwardingAddresses should be initialized to 
+      channelForwardingAddresses: channelCounterparties.get(chain).keys().mapBy(_ => "forward_account"), 
+      // Start without any unprocessed packets/acknowledgements/timeouts
+      outPackets: Set(),
+      receivedButUnacknowledgedPackets: Set(),
+      inAcknowledgements: Set(),
+      inTimeouts: Set(),
+      forwardedPacket: [],
+      receivedTokens: []
+    })
+  }
+
+run DetailedHappyPathTestV2 = {
+    pure val amount = 90
+
+    pure val AtomDenomBase = ATOM
+    pure val AtomDenomSentFromAToB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
+    pure val AtomDenomSentFromBToC = AtomDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(AtomDenomSentFromAToB.path))
+    
+    pure val OsmoDenomBase = OSMO
+    pure val OsmoDenomSentFromAToB = OsmoDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(OsmoDenomBase.path))
+    pure val OsmoDenomSentFromBToC = OsmoDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(OsmoDenomSentFromAToB.path))
+    
+    pure val EthDenomBase = ETH
+    pure val EthDenomSentFromAToB = EthDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(EthDenomBase.path))
+    pure val EthDenomSentFromBToC = EthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(EthDenomSentFromAToB.path))
+    
+
+    initV2.then(
+      // Make sure that Alice has enough tokens on chain A. In the go test, this
+      // is implicitly done somewhere in the test environment setup.
+      setBalanceInV2("A", "alice", ATOM, amount)
+    ).then(
+      setBalanceInV2("A", "alice", OSMO, amount)
+    ).then(
+      setBalanceInV2("A", "alice", ETH, amount)
+    ).then(
+      sendPacketV2("A", "B", [{denom:ATOM, amount: amount },{denom:ETH, amount: amount }, {denom:OSMO, amount: amount } ], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+    ).then(all{
+      val balanceC = getBalanceInV2("A", "alice", AtomDenomBase)
+      assert(balanceC == 0),
+
+      val balanceC = getBalanceInV2("A", "alice", EthDenomBase)
+      assert(balanceC == 0),
+
+      val balanceC = getBalanceInV2("A", "alice", OsmoDenomBase)
+      assert(balanceC == 0),
+
+      //  ).then(
+      receivePacketV2("A", "B") 
+    }).then(
+      sendPacketV2("B", "C", [{denom:AtomDenomSentFromAToB, amount: amount },{denom:EthDenomSentFromAToB, amount: amount }, {denom:OsmoDenomSentFromAToB, amount: amount } ], "forward_account", "charlie",[])
+    ).then(
+      receivePacketV2("B", "C") 
+    //).then(
+      //receiveAck("B")
+    //).then(
+    //  receiveAck("A")
+    ).then(all {
+      // check that the balance is updated on chainC
+      val balanceC = getBalanceInV2("C", "charlie", AtomDenomSentFromBToC)
+      assert(balanceC == amount),
+
+       val balanceC1 = getBalanceInV2("C", "charlie", OsmoDenomSentFromBToC)
+      assert(balanceC1 == amount),
+
+
+       val balanceC2 = getBalanceInV2("C", "charlie", EthDenomSentFromBToC)
+      assert(balanceC2 == amount),
+
+      // check that balance on chain B is empty
+      val balanceB = getBalanceInV2("B", "bob", AtomDenomSentFromAToB)
+      assert(balanceB == 0),
+      // check the escrow_account balance on chain B is amount
+      val balanceB2 = getBalanceInV2("B", "escrow_account", AtomDenomSentFromAToB)
+      assert(balanceB2 == amount),
+
+      val balanceB2 = getBalanceInV2("B", "escrow_account", OsmoDenomSentFromAToB)
+      assert(balanceB2 == amount),
+
+      val balanceB2 = getBalanceInV2("B", "escrow_account", EthDenomSentFromAToB)
+      assert(balanceB2 == amount),
+
+      // check that balance on chain A is empty
+      val balanceA = getBalanceInV2("A", "alice", AtomDenomBase)
+      assert(balanceA == 0),
+      // check the escrow_account balance on chain A is amount
+      val balanceA = getBalanceInV2("A", "escrow_account", AtomDenomBase)
+      assert(balanceA == amount),
+
+         val balanceA = getBalanceInV2("A", "escrow_account", EthDenomBase)
+      assert(balanceA == amount),
+
+         val balanceA = getBalanceInV2("A", "escrow_account", OsmoDenomBase)
+      assert(balanceA == amount),
+
+      // noop
+      chainStatesV2' = chainStatesV2
       }
     )
   }
