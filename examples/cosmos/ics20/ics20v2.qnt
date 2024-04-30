@@ -22,14 +22,20 @@ module ics20v2 {
   type Height = int
   type ForwardingPath= List[HopElement]
 
-  // IBC packet types
-  type FungibleTokenData = {
-    denom: DenomTrace,
-    amount: UINT256,
+  // Ics20v2 types  
+ 
+  type Token = {
+  denom: DenomTrace,
+  //trace: str, contained in DenomTrace which has baseDenom and Path   
+  amount: UINT256 
+  }
+
+  type FungibleTokenData= {
+    tokens: List[Token], 
     sender: Address,
     receiver: Address,
-    memo: str, 
-    forwardingPath: ForwardingPath // Adding forwarding on V1 data packets 
+    memo: str,
+    forwardingPath: ForwardingPath
   }
 
   type Packet = {
@@ -39,70 +45,24 @@ module ics20v2 {
     destPort: str,
     destChannel: Channel,
   }
-
-  type FungibleTokenPacketAcknowledgement = {
+  
+    type FungibleTokenPacketAcknowledgement = {
     success: bool,
     errorMessage: str,
     packet: Packet  // the acknowledged packet
   }
 
-  /// State of the IBC module in a chain
   type ChainState = {
     bank: Accounts,
     channels: ChannelCounterparties,
     channelEscrowAddresses: Channel -> Address,
-    channelForwardingAddresses: Channel -> Address, //Needed? 
+    channelForwardingAddresses: Channel -> Address, 
     // IBC packet handling:
     outPackets: Set[Packet],                        // outgoing unreceived packets
     receivedButUnacknowledgedPackets: Set[Packet],  // received but unacknowledged packets
     inAcknowledgements: Set[FungibleTokenPacketAcknowledgement],  // incoming acknowledgements
     inTimeouts: Set[Packet], // incoming timeouts
     forwardedPacket: List[Packet], //packetForwardPath                                
-  }
-
- // NOT USED TYPES. 
- //These type will be useful to define the multi-denom which is not currently supported 
-  // Ics20v2 types  
-  type Token = {
-  denom: DenomTrace,
-  //trace: str, contained in DenomTrace which has baseDenom and Path   
-  amount: UINT256 
-  }
-
-   // IBC packetV2 types
-  type FungibleTokenDataV2= {
-    tokens: List[Token], 
-    sender: Address,
-    receiver: Address,
-    memo: str,
-    forwardingPath: ForwardingPath
-  }
-
-  type PacketV2 = {
-    data: FungibleTokenDataV2,
-    sourcePort: str,
-    sourceChannel: Channel,
-    destPort: str,
-    destChannel: Channel,
-  }
-  
-    type FungibleTokenPacketAcknowledgementV2 = {
-    success: bool,
-    errorMessage: str,
-    packet: PacketV2  // the acknowledged packet
-  }
-
-  type ChainStateV2 = {
-    bank: Accounts,
-    channels: ChannelCounterparties,
-    channelEscrowAddresses: Channel -> Address,
-    channelForwardingAddresses: Channel -> Address, 
-    // IBC packet handling:
-    outPackets: Set[PacketV2],                        // outgoing unreceived packets
-    receivedButUnacknowledgedPackets: Set[PacketV2],  // received but unacknowledged packets
-    inAcknowledgements: Set[FungibleTokenPacketAcknowledgementV2],  // incoming acknowledgements
-    inTimeouts: Set[PacketV2], // incoming timeouts
-    forwardedPacket: List[PacketV2], //packetForwardPath                                
     receivedTokens: List[Token],
   }
 
@@ -120,51 +80,9 @@ module ics20v2 {
     chainState.channels.get(sourceChannel)
   }
 
-  pure def getCounterpartyV2(chainStateV2: ChainStateV2, sourceChannel: Channel): Channel = {
-    chainStateV2.channels.get(sourceChannel)
-  }
-
   /****************************/
   /*     public interface     */
   /****************************/
-
- // For Token forwarding without MultiDenom support 
- // Only modification needed to sendFungibleTokens are: 
- // 1. Pass forwadingPath as a function parameter   
- // 2. Pass the forwardingPath into the data
- pure def sendFungibleTokens(chainState: ChainState, denomination: DenomTrace, amount: UINT256,
-                              sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
-                              timeoutHeight: Height, timeoutTimestamp: uint64): ChainState = {
-    
-    pure val bankResult = if (movingBackAlongTrace(denomination, { port: sourcePort, channel: sourceChannel })) {
-      // burn vouchers
-      (chainState.bank).BurnCoins(sender, denomination, amount)
-    } else {
-      // escrow tokens
-      pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
-      chainState.bank.TransferCoins(sender, escrowAccount, denomination, amount)
-    }
-
-    if (bankResult.success) {
-      pure val data = { denom: denomination, amount: amount, sender: sender, receiver: receiver, memo: "", forwardingPath: forwardingPath }
-
-      // handler.sendPacket
-      pure val packet = {
-        data: data,
-        sourcePort: sourcePort,
-        sourceChannel: sourceChannel,
-        destPort: "transfer",
-        destChannel: getCounterparty(chainState, sourceChannel),
-      }
-
-      chainState
-        .with("bank", bankResult.accounts)
-        .with("outPackets", chainState.outPackets.union(Set(packet)))
-    } else {
-      chainState
-    }
-    
-  }
 
 // Helper function to navigate the token list for multidenom support 
   pure def getNextToken(Tokens: List[Token]): (DenomTrace, UINT256, List[Token]) = {
@@ -191,9 +109,9 @@ module ics20v2 {
 // transaction process itself.
 // 
 // To ensure atomicity execution, we work on the token list without using fold function.
- pure def sendFungibleTokensV2(chainStateV2: ChainStateV2, tokens012: List[Token], 
+ pure def sendFungibleTokens(chainState: ChainState, tokens012: List[Token], 
                               sender: Address, receiver: Address, forwardingPath: ForwardingPath, sourcePort: str, sourceChannel: Channel,
-                              timeoutHeight: Height, timeoutTimestamp: uint64): ChainStateV2 = {
+                              timeoutHeight: Height, timeoutTimestamp: uint64): ChainState = {
       
       // Compute First Step Bank Result results is a tuple, bankResult and chainState
       pure val bankResult0 = 
@@ -205,18 +123,18 @@ module ics20v2 {
           
             if (movingBackAlongTrace(denom0, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
-              pure val res=chainStateV2.bank.BurnCoins(sender, denom0, amount0) 
-              (res, chainStateV2.with("bank",res.accounts))
+              pure val res=chainState.bank.BurnCoins(sender, denom0, amount0) 
+              (res, chainState.with("bank",res.accounts))
             } else {
               // escrow tokens
-              pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
-              pure val res=chainStateV2.bank.TransferCoins(sender, escrowAccount, denom0, amount0) 
-               (res, chainStateV2.with("bank",res.accounts))
+              pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
+              pure val res=chainState.bank.TransferCoins(sender, escrowAccount, denom0, amount0) 
+               (res, chainState.with("bank",res.accounts))
               
               } 
           }
           // No Token to forward
-          else {({success: false, accounts: chainStateV2.bank}, chainStateV2)}
+          else {({success: false, accounts: chainState.bank}, chainState)}
       
       // Retrieve remaining token list elements
       pure val tokens12 = {      
@@ -237,13 +155,13 @@ module ics20v2 {
               // burn vouchers
               //(chainStateV2.bank).BurnCoins(sender, denom1, amount1)
               pure val res=bankResult0._2.bank.BurnCoins(sender, denom1, amount1) 
-               (res, chainStateV2.with("bank",res.accounts))
+               (res, chainState.with("bank",res.accounts))
               
               } else {
                 // escrow tokens
-                pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
+                pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
                 pure val res= bankResult0._2.bank.TransferCoins(sender, escrowAccount, denom1, amount1)
-                (res, chainStateV2.with("bank",res.accounts))
+                (res, chainState.with("bank",res.accounts))
               }
           }
           // If no more tokens to forward, propagate the previous bank result. 
@@ -269,12 +187,12 @@ module ics20v2 {
         if (movingBackAlongTrace(denom2, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
               pure val res= (bankResult1._2.bank).BurnCoins(sender, denom2, amount2)
-              (res, chainStateV2.with("bank",res.accounts))
+              (res, chainState.with("bank",res.accounts))
               } else {
                 // escrow tokens
-                pure val escrowAccount = chainStateV2.channelEscrowAddresses.get(sourceChannel)
+                pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
                 pure val res=bankResult1._2.bank.TransferCoins(sender, escrowAccount, denom2, amount2)
-                (res, chainStateV2.with("bank",res.accounts))
+                (res, chainState.with("bank",res.accounts))
               }
         }
         // If no more token to forward and previous result == success --> propagate the middle step result
@@ -297,28 +215,20 @@ module ics20v2 {
         sourcePort: sourcePort,
         sourceChannel: sourceChannel,
         destPort: "transfer",
-        destChannel: getCounterpartyV2(chainStateV2, sourceChannel),
+        destChannel: getCounterparty(chainState, sourceChannel),
       }
 
-      chainStateV2.with("bank", finalBankResult._1.accounts)
-                  .with("outPackets", chainStateV2.outPackets.union(Set(packetV2)))
+      chainState.with("bank", finalBankResult._1.accounts)
+                  .with("outPackets", chainState.outPackets.union(Set(packetV2)))
     
   }
   else {
-    chainStateV2
+    chainState
   }
   }
-
 
 // Helper functions for onRecvPacket Logic execution
   pure def assignCFA(address: Address, chainState: ChainState, packet: Packet): str = {
-    if(chainState.channelForwardingAddresses.get(packet.destChannel)==""){
-        (address) // Pass in MOCK ADDRESS or WRITE NEW ADDRESS FUNCTION  
-    }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
-    }
-
-  // Helper functions for onRecvPacket Logic execution
-  pure def assignCFAv2(address: Address, chainState: ChainStateV2, packet: PacketV2): str = {
     if(chainState.channelForwardingAddresses.get(packet.destChannel)==""){
         (address) // Pass in MOCK ADDRESS or WRITE NEW ADDRESS FUNCTION  
     }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
@@ -332,17 +242,6 @@ module ics20v2 {
   }
 
   pure def assignRecvAddress(FPexists: bool, packet: Packet, address: Address): (str,str) = {
-    if(FPexists){
-        pure val receiver = address 
-        pure val finalReceiver = packet.data.receiver
-        (receiver,finalReceiver)
-    } else{
-        pure val receiver = packet.data.receiver
-        (receiver,"")
-    }
-  }
-
-    pure def assignRecvAddressV2(FPexists: bool, packet: PacketV2, address: Address): (str,str) = {
     if(FPexists){
         pure val receiver = address 
         pure val finalReceiver = packet.data.receiver
@@ -370,96 +269,14 @@ module ics20v2 {
   /// `onRecvPacket` should return an acknowledgment, but it also has to update
   /// the chain state, so the return type is the updated value for the chain
   /// state and the acknowledgment
-
- // onRecv logic supporting multidenom
-  pure def onRecvPacket(chainState: ChainState, packet: Packet): (ChainState, FungibleTokenPacketAcknowledgement) = {
-    pure val data = packet.data
-    // Change to correct forward_Account :: should be computed based on sourceChannel dest channel
-    // Addresses assignment. Helper functions define spec logic for assignment 
-    // This is probably wrong. We don't hit this in any case because we start with everything initialized
-    pure val address= getForwardAccount(packet.destChannel)
-    // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFA(address, chainState, packet)
-    //pure val channelForwardingAddress= assignCFA("forward_account", chainState, packet)
-    pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
-    pure val receiver = addressTuple._1
-    pure val finalReceiver = addressTuple._2 
-    
-    // Note that for quint is better not the preconstruct a succesfull ack 
-    // but rather to assign it to true of false when needed
-    
-    pure val movingBack = movingBackAlongTrace(data.denom, { port: packet.sourcePort, channel: packet.sourceChannel })
-    pure val newDenom = updateTrace(movingBack, data.denom, { port: packet.destPort, channel: packet.destChannel })
-
-    // result is a pair of 1. a BankResult and 2. an error message that is used in case BankResult.success = false
-    
-    
-    pure val result = if (movingBack) {
-      // unescrow tokens to receiver
-      pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.destChannel)
-      pure val bankResult = chainState.bank.TransferCoins(escrowAccount, receiver, newDenom, data.amount)
-
-      (bankResult, "transfer coins failed")
-    } else {
-      // mint vouchers to receiver
-      pure val bankResult = chainState.bank.MintCoins(receiver, newDenom, data.amount)
-
-      (bankResult, "mint coins failed")
-    }
-
-    pure val bankResult = result._1
-    pure val errorMessage = result._2
-
-    
-    pure val ack = if (bankResult.success) {
-      { success: true, errorMessage: "", packet: packet }
-    } else {
-      { success: false, errorMessage: errorMessage, packet: packet }
-    }
-
-    if(ack.success==false){
-      (chainState,ack)
-    }
-
-
-    // THIS SHOULD BE EXECUTED ON THE END OF Multidenom logic. 
-    // 
-    // Otherwise proceed with token forwarding logic. 
-    else {
-      if(data.forwardingPath!=[]){
-
-        pure val tempChainState = chainState.with("bank", bankResult.accounts)
-
-        pure val nextStuff=getNextPortChannel(data.forwardingPath)
-        pure val nextPort=nextStuff._1
-        pure val nextChannel=nextStuff._2
-        pure val newForwardingPath=nextStuff._3
-
-        pure val newTempChainState = sendFungibleTokens(tempChainState, data.denom, data.amount,
-                              receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
-                              10,10) // Which Timeout?  
-        // store packet for future sending ack
-        pure val newChainState = newTempChainState.with("forwardedPacket", [packet])
-        (newChainState,ack)
-      }
-        else{
-        
-        pure val tempChainState = chainState.with("bank", bankResult.accounts)
-        //pure val nilAck= { success: "", errorMessage: "", packet: packet }
-        (tempChainState, ack) // Here we should return nil for the ack 
-      }
-      }
-    
-  }
-
 // ON RECVIVE PACKET V2 
-  pure def onRecvPacketV2(chainState: ChainStateV2, packet: PacketV2): (ChainStateV2, FungibleTokenPacketAcknowledgementV2) = {
+  pure def onRecvPacket(chainState: ChainState, packet: Packet): (ChainState, FungibleTokenPacketAcknowledgement) = {
     pure val data = packet.data
     pure val tokens012= data.tokens
     pure val address= getForwardAccount(packet.destChannel)
     // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFAv2(address, chainState, packet)
-    pure val addressTuple=assignRecvAddressV2(data.forwardingPath!=[],packet, channelForwardingAddress)
+    pure val channelForwardingAddress= assignCFA(address, chainState, packet)
+    pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
     pure val receiver = addressTuple._1
     pure val finalReceiver = addressTuple._2 
     
@@ -609,7 +426,7 @@ module ics20v2 {
         pure val nextChannel=nextStuff._2
         pure val newForwardingPath=nextStuff._3
 
-        pure val newTempChainState = sendFungibleTokensV2(tempChainState, data.tokens, 
+        pure val newTempChainState = sendFungibleTokens(tempChainState, data.tokens, 
                               receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
                               10,10) // Which Timeout?  
         // store packet for future sending ack
@@ -637,32 +454,9 @@ module ics20v2 {
   ///
   /// `packet`: The packet (originally sent from the local chain) that initiated the token transfer.
   ///           Packet `packet` should have resulted in a failed acknowledgement or timeout.
-  pure def refundTokens(chainState: ChainState, packet: Packet): ChainState = {
-    pure val data: FungibleTokenData = packet.data
-    pure val source: HopElement = { port: packet.sourcePort, channel: packet.sourceChannel }
-    pure val bankResult =
-      if (movingBackAlongTrace(data.denom, source)) {
-        // The (failed) transfer attempt was moving the token back along its denom trace.
-        // For this, we originally burnt vouchers in `sendFungibleTokens`, so mint them back.
-        chainState.bank.MintCoins(data.sender, data.denom, data.amount)
-      } else {
-        // The (failed) transfer attempt was moving the token further along its denom trace.
-        // For this, we originally escrowed tokens in `sendFungibleTokens`, so unescrow them back.
-        pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.sourceChannel)
-        chainState.bank.TransferCoins(escrowAccount, data.sender, data.denom, data.amount)
-      }
-    if (bankResult.success) {
-      chainState.with("bank", bankResult.accounts)
-    } else {
-      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
-      //       We treat bank failure as a noop.
-      chainState
-    }
-  }
-  
   // RefundTokensV2 with multidenom and token forwarding 
-    pure def refundTokensV2(chainState: ChainStateV2, packet: PacketV2): ChainStateV2 = {
-    pure val data: FungibleTokenDataV2 = packet.data
+    pure def refundTokens(chainState: ChainState, packet: Packet): ChainState = {
+    pure val data: FungibleTokenData = packet.data
     pure val tokens012 = data.tokens
       
       // Compute First Step Bank Result results is a tuple, bankResult and chainState
@@ -770,6 +564,7 @@ module ics20v2 {
     }
   }
 
+
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
                                acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState) = {
@@ -806,43 +601,7 @@ module ics20v2 {
         
   }
 
-  /// Called by the routing module when a packet sent by this module has been acknowledged.
-  pure def onAcknowledgePacketV2(chainState: ChainStateV2, packet: PacketV2,
-                               acknowledgement: FungibleTokenPacketAcknowledgementV2) : (ChainStateV2) = {
-      
-      // check if the packet that was sent is from a previously forwarded packet
-      if(chainState.forwardedPacket!=[]){
-          pure val prevPacket=chainState.forwardedPacket.head() 
-          if (acknowledgement.success) {
-              // The acknowledgment get written in the action for simuliation purposes. 
-              //pure val ack ={ success: true, errorMessage: "forwarded packet succeeded", packet: prevPacket }
-              //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
-              //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
-              // No Op 
-              chainState
-          } else {
-                // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
-                // we must revert the changes that came from successfully receiving the tokens on our chain
-                // before propogating the error acknowledgement back to original sender chain        
-                pure val revertedChainState=revertInFlightChangesV2(chainState,packet,prevPacket)
-                // The acknowledgment get written in the action for simuliation purposes.
-                // write error acknowledgement
-                //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
-                //val newInAcknowledgements = revertedChainState.inAcknowledgements.union(Set(ack))
-                //pure val newChainState= revertedChainState.with("inAcknowledgements", newInAcknowledgements)
-                revertedChainState
-                }
-      }else {
-        // if the transfer failed, refund the tokens
-      if (acknowledgement.success==false) {
-       pure val newChainState= refundTokensV2(chainState, packet)
-      newChainState 
-      }else chainState
-      } 
-        
-  }
-
-  /// Called by the routing module when a packet sent by this module has timed out
+/// Called by the routing module when a packet sent by this module has timed out
   /// (such that it will not be received on the destination chain).
   pure def onTimeoutPacket(chainState: ChainState, packet: Packet): (ChainState)  = {
     // check if the packet was sent is from a previously forwarded packet
@@ -866,29 +625,6 @@ module ics20v2 {
       }
   }
 
-/// Called by the routing module when a packet sent by this module has timed out
-  /// (such that it will not be received on the destination chain).
-  pure def onTimeoutPacketV2(chainState: ChainStateV2, packet: PacketV2): (ChainStateV2)  = {
-    // check if the packet was sent is from a previously forwarded packet
-    pure val prevPacket=chainState.forwardedPacket.head()
-    if(chainState.forwardedPacket!=[]){
-      // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
-      // we must revert the changes that came from successfully receiving the tokens on our chain
-      // before propogating the error acknowledgement back to original sender chain
-      pure val tempChainState=revertInFlightChangesV2(chainState,packet,prevPacket)
-      // write error acknowledgement
-      // The acknowledgment get written in the action for simuliation purposes.
-      //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
-      //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
-      //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
-      tempChainState
-      }
-      else {
-        // the packet timed out, so refund the tokens
-        pure val refundChainState=refundTokensV2(chainState, packet)
-        refundChainState
-      }
-  }
 
 // Helper Function revertInFlightChanges
 // Version without Multidenom Support 
@@ -899,51 +635,6 @@ module ics20v2 {
 // to ensure atomic packet forwarding
 //******* IMPORTANT - note that movingBackAlongTrace returns the opposite of isSource defined in the spec ******* 
 pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, receivedPacket: Packet): ChainState = {
- pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
- pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
- pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
- pure val hopElementRecv = {port: receivedPacket.destPort, channel: receivedPacket.destChannel}
- 
- pure val bankResult =
-      // check if the packet we sent out was sending as source or not
-      // in this case we escrowed the outgoing tokens
-      if (movingBackAlongTrace(sentPacket.data.denom, hopElementSent)==false) {
-          // check if the packet we received was a source token for our chain
-          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)==false) {
-              // receive sent tokens from the received escrow to the forward escrow account
-              // so we must send the tokens back from the forward escrow to the original received escrow account
-              chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
-          }
-          else {
-              // receive minted vouchers and sent to the forward escrow account
-              // so we must remove the vouchers from the forward escrow account and burn them
-              chainState.bank.BurnCoins(forwardEscrow, sentPacket.data.denom, sentPacket.data.amount)
-            }
-    } else {
-          // in this case we burned the vouchers of the outgoing packets
-          // check if the packet we received was a source token for our chain
-          // in this case, the tokens were unescrowed from the reverse escrow account
-          if (movingBackAlongTrace(sentPacket.data.denom, hopElementRecv)==false){
-            // in this case we must mint the burned vouchers and send them back to the escrow account
-            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, sentPacket.data.amount)
-          }else{
-            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
-            // So no state changes were made, and thus no reversion is necessary
-            // No Op Miniting 0 Tokens 
-            chainState.bank.MintCoins(reverseEscrow, sentPacket.data.denom, 0)
-            }
-          }
-      
-      if (bankResult.success) {
-      chainState.with("bank", bankResult.accounts)
-    } else {
-      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
-      //       We treat bank failure as a noop.
-      chainState
-    }
-}
-
-pure def revertInFlightChangesV2(chainState: ChainStateV2, sentPacket: PacketV2, receivedPacket: PacketV2): ChainStateV2 = {
  pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
  pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
  pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
@@ -1137,7 +828,7 @@ module ics20v2Test {
 
   /// Map from chain identifiers to their state
   var chainStates: str -> ChainState
-  var chainStatesV2: str -> ChainStateV2
+  
   /// Map from chain identifiers to a map of the chain identifiers it can
   /// communicate with and the channel to be used to send packets. For example,
   /// chain A connects to chain B through channel "channelToB".
@@ -1201,16 +892,6 @@ module ics20v2Test {
     channelCounterparties.get(sourceChain).get(packet.sourceChannel) == packet.destChannel
   }
 
-    /// Return true iff there is a channel from `sourceChain` to `destChain` defined in `CHANNEL_TOPOLOGY`
-  /// that corresponds to the channel endpoints of `packet`.
-  pure def isTravelingBetweenV2(packet: PacketV2, sourceChain: str, destChain: str): bool = all {
-    // there is a channel between `sourceChain` and `destChain`
-    hasChannelBetween(sourceChain, destChain),
-    // packet endpoints correspond to channel ends
-    channelCounterparties.get(sourceChain).has(packet.sourceChannel),
-    channelCounterparties.get(sourceChain).get(packet.sourceChannel) == packet.destChannel
-  }
-
   /* Helper operators to manipulate bank state */
   /// Sets the balance of `account` in `chain` to `amount` of `denom`.
   action setBalanceIn(chain, account, denom, amount) = {
@@ -1219,21 +900,11 @@ module ics20v2Test {
     )
   }
 
-  action setBalanceInV2(chain, account, denom, amount) = {
-    chainStatesV2' = chainStatesV2.setBy(chain, state =>
-      state.with("bank", state.bank.setBy(account, balances => balances.set(denom, amount)))
-    )
-  }
   /// Gets the balance of `account` in `chain` of `denom`.
   def getBalanceIn(chain, account, denom) = {
     chainStates.get(chain).bank.getBalances(account).getBalance(denom)
   }
 
-
-  /// Gets the balance of `account` in `chain` of `denom`.
-  def getBalanceInV2(chain, account, denom) = {
-    chainStatesV2.get(chain).bank.getBalances(account).getBalance(denom)
-  }
 
 /// Gets the `escrow_account` a or c for the chain B.
   def getEscrowAccount(channel) = {
@@ -1246,8 +917,7 @@ module ics20v2Test {
 
   /// Send a packet from `sourceChain` to `destChain`, indicating a transfer
   /// of `amount`-many tokens of `denom` from `sender` to `receiver`.
-  action sendPacket(sourceChain: str, destChain: str,
-                    denom: DenomTrace, amount: UINT256,
+action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
                     sender: Address, receiver: Address, forwardingPath: ForwardingPath): bool = all {
     // (1) Pre-condition:
     // there is a channel between `sourceChain` and `destChain`
@@ -1256,30 +926,12 @@ module ics20v2Test {
     // Extract Forwarding Path 
     // (2) Send the packet using `sendFungibleTokens`:
     val sourceChainState = chainStates.get(sourceChain)
-    val newSourceChainState = sendFungibleTokens(sourceChainState, denom, amount,
+    val newSourceChainState = sendFungibleTokens(sourceChainState, tokens,
                                                  sender, receiver, forwardingPath, 
                                                  "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
                                                  0, 0)
-
     // (3) Quint state transition:
     chainStates' = chainStates.set(sourceChain, newSourceChainState)
-  }
-
-action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
-                    sender: Address, receiver: Address, forwardingPath: ForwardingPath): bool = all {
-    // (1) Pre-condition:
-    // there is a channel between `sourceChain` and `destChain`
-    hasChannelBetween(sourceChain, destChain),
-
-    // Extract Forwarding Path 
-    // (2) Send the packet using `sendFungibleTokens`:
-    val sourceChainState = chainStatesV2.get(sourceChain)
-    val newSourceChainState = sendFungibleTokensV2(sourceChainState, tokens,
-                                                 sender, receiver, forwardingPath, 
-                                                 "transfer", CHANNEL_TOPOLOGY.get(sourceChain).get(destChain),
-                                                 0, 0)
-    // (3) Quint state transition:
-    chainStatesV2' = chainStatesV2.set(sourceChain, newSourceChainState)
   }
 
 
@@ -1333,6 +985,7 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
   /// - Call the `onRecvPacket` callback on it.
   /// - Update the chain states to record the packet as received.
   /// - Record (but not receive) the acknowledgement produced by `onRecvPacket` on `destChain`.
+// Receive packet v2
   action receivePacket(sourceChain: str, destChain: str): bool =
     val sourceChainState = chainStates.get(sourceChain)
     all {
@@ -1360,47 +1013,6 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
         // Update set `inAcknowledgements` to include the sent but (yet) unprocessed `acknowledgement`
         val newSourceChainInAcknowledgements = sourceChainState.inAcknowledgements.union(Set(acknowledgement))
         // Update source chain state with new packet/acknowledgement sets
-        
-        val newSourceChainState   = sourceChainState
-                                          .with("outPackets", newSourceChainOutPackets)
-                                          .with("receivedButUnacknowledgedPackets", newSourceChainUnackPackets)
-                                          .with("inAcknowledgements", newSourceChainInAcknowledgements)
-        
-        // (5) Quint state transition:
-        chainStates' = chainStates
-                          .set(destChain, newDestChainState)
-                          .set(sourceChain, newSourceChainState)
-      }
-    }
-
-// Receive packet v2
-  action receivePacketV2(sourceChain: str, destChain: str): bool =
-    val sourceChainState = chainStatesV2.get(sourceChain)
-    all {
-      // (1) Pre-condition:
-      // there is a channel between `sourceChain` and `destChain`
-      hasChannelBetween(sourceChain, destChain),
-      // there is an unreceived packet traveling from `sourceChain` to `destChain`
-      sourceChainState.outPackets.exists(packet => packet.isTravelingBetweenV2(sourceChain, destChain)),
-
-      // (2) Non-deterministically pick a packet from `sourceChain` to receive on `destChain`:
-      nondet packet = sourceChainState.outPackets
-                                  .filter(p => p.isTravelingBetweenV2(sourceChain, destChain))
-                                  .oneOf()
-      all {
-        // (3) Compute updated destination chain state: call `onRecvPacket` callback:
-        val recvResult = onRecvPacketV2(chainStatesV2.get(destChain), packet)
-        val newDestChainState = recvResult._1
-        val acknowledgement   = recvResult._2
-
-        // (4) Compute updated source chain state:
-        // Update packet sets, moving `packet` from `outPackets` to `receivedButUnacknowledgedPackets`
-        // (this simulates ICS 4 exactly-once packet delivery)
-        val newSourceChainOutPackets = sourceChainState.outPackets.exclude(Set(packet))
-        val newSourceChainUnackPackets = sourceChainState.receivedButUnacknowledgedPackets.union(Set(packet))
-        // Update set `inAcknowledgements` to include the sent but (yet) unprocessed `acknowledgement`
-        val newSourceChainInAcknowledgements = sourceChainState.inAcknowledgements.union(Set(acknowledgement))
-        // Update source chain state with new packet/acknowledgement sets
         val newReceivedTokens = packet.data.tokens
         
         val newSourceChainState   = sourceChainState
@@ -1409,13 +1021,13 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
                                           .with("inAcknowledgements", newSourceChainInAcknowledgements)
                                           
         // (5) Quint state transition:
-        chainStatesV2' = chainStatesV2
+        chainStates' = chainStates
                           .set(destChain, newDestChainState)
                           .set(sourceChain, newSourceChainState)
       }
     }
 
-  /// Time out a packet sent from `sourceChain` to `destChain`.
+/// Time out a packet sent from `sourceChain` to `destChain`.
   action timeoutPacket(sourceChain: str, destChain: str): bool =
     val sourceChainState = chainStates.get(sourceChain)
     all {
@@ -1443,9 +1055,8 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
       chainStates' = chainStates.set(sourceChain, newSourceChainState)
     }
 
-
-  
-  // Mock Function to forward the correct error ack. Useful to trigger error onAck logic. 
+ 
+  // Mock Function to forward the correct error ack. Useful to trigger error onAck logic.  
   action forwardAck(forwarderChain: str, receiverChain: str): bool =
     val receiverChainState = chainStates.get(receiverChain)
     val forwarderChainState = chainStates.get(forwarderChain)
@@ -1517,7 +1128,7 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
 
     }
 
-  /// Receive a timeout on `chain`:
+/// Receive a timeout on `chain`:
   /// - Pick an arbitrary, previously unreceived timeout on `chain`.
   /// - Call the `onTimeoutPacket` callback on it.
   /// - Update the chain state to record the timeout as received.
@@ -1561,19 +1172,21 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: []
     })
   }
 
   // Take a step in the protocol (non-deterministically chooses one action).
   action step = {
+    pure val token=[{denom: ATOM, amount: oneOf(1.to(10))}]
     nondet sourceChain = CHAINS.oneOf()
     nondet destChain = CHAINS.exclude(Set(sourceChain)).oneOf()
     any {
-      nondet amount = oneOf(1.to(10))
+      //nondet amount = oneOf(1.to(10))
       nondet sourceAddr = USER_ACCOUNTS.oneOf()
       nondet destAddr = USER_ACCOUNTS.exclude(Set(sourceAddr)).oneOf()
-      sendPacket(sourceChain, destChain, ATOM, amount, sourceAddr, destAddr,[]),
+      sendPacket(sourceChain, destChain, token, sourceAddr, destAddr,[]),
       receivePacket(sourceChain, destChain),
       timeoutPacket(sourceChain, destChain),
       receiveAck(sourceChain),
@@ -1590,8 +1203,8 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
   /// 1. sends the packet from `sourceChain` to `destChain`,
   /// 2. receives the packet on `destChain` and produces an acknowledgement, and
   /// 3. receives and processes the acknowledgement on `sourceChain`.
-  run sendTransfer(sourceChain: str, destChain: str, denom: DenomTrace, amount: UINT256, sender: Address, receiver: Address, forwadingPath: ForwardingPath): bool = (  
-      sendPacket(sourceChain, destChain, denom, amount, sender, receiver,forwadingPath)
+  run sendTransfer(sourceChain: str, destChain: str, tokens: List[Token], sender: Address, receiver: Address, forwadingPath: ForwardingPath): bool = (  
+      sendPacket(sourceChain, destChain, tokens, sender, receiver,forwadingPath)
     ).then(
       receivePacket(sourceChain, destChain)
     ).then(
@@ -1599,11 +1212,11 @@ action sendPacketV2(sourceChain: str, destChain: str, tokens: List[Token],
     )
 
   /****************************************************************************
-   * TESTS For V1+Forwarding
+   * TESTS For Forwarding - always use a single token
    ***************************************************************************/
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+/*
 run DetailedHappyPathTest = {
     pure val amount = 90
 
@@ -1650,7 +1263,7 @@ run DetailedHappyPathTest = {
       }
     )
   }
-
+*/
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // Tansfer happening from A to C using the forwarding path 
@@ -1667,7 +1280,7 @@ run DetailedHappyPathTest = {
       // is implicitly done somewhere in the test environment setup.
       setBalanceIn("A", "alice", ATOM, amount)
     ).then(
-      sendTransfer("A", "B", ATOM, amount, "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+      sendTransfer("A", "B", [{denom:ATOM, amount: amount }], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     ).then(all {
       // check that voucher exists on chain B
       val balanceB = getBalanceIn("B", "forward_account", denomSentFromAToB)
@@ -1676,7 +1289,7 @@ run DetailedHappyPathTest = {
       val balanceA = getBalanceIn("A", "escrow_account", denomInA)
       assert(balanceA == amount),
 
-      sendTransfer("B", "C", denomSentFromAToB, amount, "forward_account", "charlie",[])
+      sendTransfer("B", "C", [{denom:denomSentFromAToB, amount: amount }], "forward_account", "charlie",[])
     }).then(
       all {
         // check that the balance is updated on chainC
@@ -1718,7 +1331,8 @@ run DetailedHappyPathTest = {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: []
     })
   }
 
@@ -1741,7 +1355,7 @@ run DetailedHappyPathTest = {
       setBalanceIn("B", "bob", ATOM, amount)
     ).then({
       // Normal Transfer B to C
-      sendPacket("B", "C", denomInA, amount, "bob", "charlie",[])
+      sendPacket("B", "C", [{denom:ATOM, amount: amount }], "bob", "charlie",[])
     }
     ).then(all{
       
@@ -1777,7 +1391,7 @@ run DetailedHappyPathTest = {
       val balanceC = getBalanceIn("C", "charlie", denomBC)
       assert(balanceC == amount),
       // Start Forwarding Transfer C -> B -> A
-      sendPacket("C", "B", denomBC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("C", "B", [{denom:denomBC, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
 
       val balanceB = getBalanceIn("B", "bob", denomInA)
@@ -1812,7 +1426,7 @@ run DetailedHappyPathTest = {
       val balanceC = getBalanceIn("C", "escrow_account", denomBC)
       assert(balanceC == 0),  
 
-      sendPacket("B", "A", denomInA, amount, getForwardAccount("channelToC"), "alice",[])
+      sendPacket("B", "A", [{denom:denomInA, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
@@ -1895,7 +1509,8 @@ run DetailedHappyPathTest = {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: [] 
     })
   }
 
@@ -1933,7 +1548,7 @@ run DetailedHappyPathTest = {
       assert(balanceC3 == 0), 
 
       // Start Forwarding Transfer C -> B -> A
-      sendPacket("C", "B", denomInA, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("C", "B", [{denom:denomInA, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
       
       val balanceC = getBalanceIn("C", "charlie", denomInA)
@@ -1964,7 +1579,7 @@ run DetailedHappyPathTest = {
       assert(balanceC3 == 0),
       
 
-      sendPacket("B", "A", denomCB, amount, getForwardAccount("channelToC"), "alice",[])
+      sendPacket("B", "A", [{denom:denomCB, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
@@ -2062,7 +1677,8 @@ run DetailedHappyPathTest = {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: []
     })
   }
 
@@ -2087,7 +1703,7 @@ run DetailedHappyPathTest = {
     ).then({
       // Forwarding Transfer A to C is composed of Forwarding Transfer A to B and B to C
       // Forwarding Transfer A to B
-      sendPacket("A", "B", denomInA, amount, "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+      sendPacket("A", "B", [{denom:denomInA, amount: amount }], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     }
     ).then(all{
       
@@ -2109,7 +1725,7 @@ run DetailedHappyPathTest = {
       // Forwarding Transfer A -> B Completed 
      
       // Forwarding Transfer B to C
-      sendPacket("B", "C", denomAB, amount, getForwardAccount("channelToA"), "charlie",[])
+      sendPacket("B", "C", [{denom:denomAB, amount: amount }], getForwardAccount("channelToA"), "charlie",[])
     }
     ).then(all{
       
@@ -2155,7 +1771,7 @@ run DetailedHappyPathTest = {
       // Precondition is met 
 
       // Start Forwarding Transfer C -> B -> A
-      sendPacket("C", "B", denomABC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("C", "B", [{denom:denomABC, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
  
       val balanceC = getBalanceIn("C", "charlie", denomABC)
@@ -2182,7 +1798,7 @@ run DetailedHappyPathTest = {
       val balanceC = getBalanceIn("C", "escrow_account", denomABC)
       assert(balanceC == 0),  
 
-      sendPacket("B", "A", denomAB, amount, getForwardAccount("channelToC"), "alice",[])
+      sendPacket("B", "A", [{denom:denomAB, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomAB)
@@ -2254,7 +1870,8 @@ run DetailedHappyPathTest = {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: []
     })
   }
 
@@ -2291,7 +1908,7 @@ run DetailedHappyPathTest = {
       assert(balanceB3 == 0), 
 
       // Start Forwarding Transfer A -> B -> A
-      sendPacket("A", "B", denomInA, amount, "alice", "alex",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("A", "B", [{denom:denomInA, amount: amount }], "alice", "alex",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
       
       val balanceA = getBalanceIn("A", "alice", denomInA)
@@ -2326,7 +1943,7 @@ run DetailedHappyPathTest = {
       assert(balanceA4 == 0),
       
 
-      sendPacket("B", "A", denomAB, amount, "forward_account", "alex",[])
+      sendPacket("B", "A", [{denom:denomAB, amount: amount }], "forward_account", "alex",[])
     }).then(all{
       
       val balanceB = getBalanceIn("B", "forward_account", denomAB)
@@ -2403,9 +2020,6 @@ run DetailedHappyPathTest = {
     )
   }
 
-
-
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Scenario5 Test 
 // Inspiring test from ics20.qnt
@@ -2439,7 +2053,8 @@ run DetailedHappyPathTest = {
       receivedButUnacknowledgedPackets: Set(),
       inAcknowledgements: Set(),
       inTimeouts: Set(),
-      forwardedPacket: []
+      forwardedPacket: [],
+      receivedTokens: []
     })
   }
 
@@ -2456,7 +2071,7 @@ run DetailedHappyPathTest = {
       setBalanceIn("A", "alice", ATOM, amount)
     ).then(
       // Normal Transfer A to B
-      sendPacket("A", "B", ATOM, amount, "alice", "bob",[])
+      sendPacket("A", "B", [{denom:ATOM, amount: amount }], "alice", "bob",[])
     ).then(
       receivePacket("A", "B") 
     ).then(
@@ -2474,7 +2089,7 @@ run DetailedHappyPathTest = {
       assert(balanceB == amount), 
 
       // Normal Transfer B to C
-      sendPacket("B", "C", denomAB, amount, "bob", "charlie",[])
+      sendPacket("B", "C", [{denom:denomAB, amount: amount }], "bob", "charlie",[])
     }).then(
       receivePacket("B", "C") 
     ).then(
@@ -2496,7 +2111,7 @@ run DetailedHappyPathTest = {
       val balanceC = getBalanceIn("C", "charlie", denomABC)
       assert(balanceC == amount),
       // Start Forwarding Transfer C -> B -> A
-      sendPacket("C", "B", denomABC, amount, "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("C", "B", [{denom:denomABC, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
       receivePacket("C", "B") 
     }).then(all{
@@ -2511,7 +2126,7 @@ run DetailedHappyPathTest = {
       setBalanceIn("A", "escrow_account", ATOM, amount-1)  
     }).then(
       // The sendFungibleTokens here must succed  
-      sendPacket("B", "A", denomAB, amount, getForwardAccount("channelToC"), "alice",[])
+      sendPacket("B", "A", [{denom:denomAB, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     ).then(all{
       
       val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomAB)
@@ -2559,9 +2174,9 @@ run DetailedHappyPathTest = {
    * TESTS For V2 : Multidenom + Forwarding
    ***************************************************************************/
 
-  action initV2 = {
-    chainStatesV2' = CHAINS.mapBy(chain => {
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 10, OSMO ->10, ETH ->10)) else Map(),
+  action initX = {
+    chainStates' = CHAINS.mapBy(chain => {
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0, OSMO ->0, ETH ->0)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
@@ -2576,7 +2191,7 @@ run DetailedHappyPathTest = {
     })
   }
 
-run DetailedHappyPathV2TestNo = {
+run DetailedHappyPathTest = {
     pure val amount = 90
 
     pure val AtomDenomBase = ATOM
@@ -2592,79 +2207,82 @@ run DetailedHappyPathV2TestNo = {
     pure val EthDenomSentFromBToC = EthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(EthDenomSentFromAToB.path))
     
 
-    initV2.then(
+    initX.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
-      setBalanceInV2("A", "alice", ATOM, amount)
+      setBalanceIn("A", "alice", ATOM, amount)
     ).then(
-      setBalanceInV2("A", "alice", OSMO, amount)
+      setBalanceIn("A", "alice", OSMO, amount)
     ).then(
-      setBalanceInV2("A", "alice", ETH, amount)
+      setBalanceIn("A", "alice", ETH, amount)
     ).then(
-      sendPacketV2("A", "B", [{denom:ATOM, amount: amount },{denom:ETH, amount: amount }, {denom:OSMO, amount: amount } ], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+      sendPacket("A", "B", [{denom:ATOM, amount: amount },{denom:ETH, amount: amount }, {denom:OSMO, amount: amount } ], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     ).then(all{
-      val balanceC = getBalanceInV2("A", "alice", AtomDenomBase)
+      val balanceC = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceC == 0),
 
-      val balanceC = getBalanceInV2("A", "alice", EthDenomBase)
+      val balanceC = getBalanceIn("A", "alice", EthDenomBase)
       assert(balanceC == 0),
 
-      val balanceC = getBalanceInV2("A", "alice", OsmoDenomBase)
+      val balanceC = getBalanceIn("A", "alice", OsmoDenomBase)
       assert(balanceC == 0),
 
       //  ).then(
-      receivePacketV2("A", "B") 
+      receivePacket("A", "B") 
     }).then(
-      sendPacketV2("B", "C", [{denom:AtomDenomSentFromAToB, amount: amount },{denom:EthDenomSentFromAToB, amount: amount }, {denom:OsmoDenomSentFromAToB, amount: amount } ], "forward_account", "charlie",[])
+      sendPacket("B", "C", [{denom:AtomDenomSentFromAToB, amount: amount },{denom:EthDenomSentFromAToB, amount: amount }, {denom:OsmoDenomSentFromAToB, amount: amount } ], "forward_account", "charlie",[])
     ).then(
-      receivePacketV2("B", "C") 
-    //).then(
-      //receiveAck("B")
-    //).then(
-    //  receiveAck("A")
+      receivePacket("B", "C") 
+    ).then(
+      receiveAck("B")
+    ).then(
+      receiveAck("A")
     ).then(all {
       // check that the balance is updated on chainC
-      val balanceC = getBalanceInV2("C", "charlie", AtomDenomSentFromBToC)
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromBToC)
       assert(balanceC == amount),
 
-       val balanceC1 = getBalanceInV2("C", "charlie", OsmoDenomSentFromBToC)
+       val balanceC1 = getBalanceIn("C", "charlie", OsmoDenomSentFromBToC)
       assert(balanceC1 == amount),
 
 
-       val balanceC2 = getBalanceInV2("C", "charlie", EthDenomSentFromBToC)
+       val balanceC2 = getBalanceIn("C", "charlie", EthDenomSentFromBToC)
       assert(balanceC2 == amount),
 
       // check that balance on chain B is empty
-      val balanceB = getBalanceInV2("B", "bob", AtomDenomSentFromAToB)
+      val balanceB = getBalanceIn("B", "bob", AtomDenomSentFromAToB)
       assert(balanceB == 0),
       // check the escrow_account balance on chain B is amount
-      val balanceB2 = getBalanceInV2("B", "escrow_account", AtomDenomSentFromAToB)
+      val balanceB2 = getBalanceIn("B", "escrow_account", AtomDenomSentFromAToB)
       assert(balanceB2 == amount),
 
-      val balanceB2 = getBalanceInV2("B", "escrow_account", OsmoDenomSentFromAToB)
+      val balanceB2 = getBalanceIn("B", "escrow_account", OsmoDenomSentFromAToB)
       assert(balanceB2 == amount),
 
-      val balanceB2 = getBalanceInV2("B", "escrow_account", EthDenomSentFromAToB)
+      val balanceB2 = getBalanceIn("B", "escrow_account", EthDenomSentFromAToB)
       assert(balanceB2 == amount),
 
       // check that balance on chain A is empty
-      val balanceA = getBalanceInV2("A", "alice", AtomDenomBase)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0),
       // check the escrow_account balance on chain A is amount
-      val balanceA = getBalanceInV2("A", "escrow_account", AtomDenomBase)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
 
-         val balanceA = getBalanceInV2("A", "escrow_account", EthDenomBase)
+         val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
       assert(balanceA == amount),
 
-         val balanceA = getBalanceInV2("A", "escrow_account", OsmoDenomBase)
+         val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
       assert(balanceA == amount),
 
       // noop
-      chainStatesV2' = chainStatesV2
+      chainStates' = chainStates
       }
     )
   }
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
 /* ***************************************************************************
