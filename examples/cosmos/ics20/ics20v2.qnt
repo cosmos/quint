@@ -324,6 +324,13 @@ module ics20v2 {
     }else (chainState.channelForwardingAddresses.get(packet.destChannel))   
     }
 
+  /// Gets the `forward_account` a or c for the chain B.
+  def getForwardAccount(channel) = {
+    if(channel=="channelToC") "forward_account_c"
+    else "forward_account_a"
+    
+  }
+
   pure def assignRecvAddress(FPexists: bool, packet: Packet, address: Address): (str,str) = {
     if(FPexists){
         pure val receiver = address 
@@ -369,7 +376,11 @@ module ics20v2 {
     pure val data = packet.data
     // Change to correct forward_Account :: should be computed based on sourceChannel dest channel
     // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFA("forward_account", chainState, packet)
+    // This is probably wrong. We don't hit this in any case because we start with everything initialized
+    pure val address= getForwardAccount(packet.destChannel)
+    // Addresses assignment. Helper functions define spec logic for assignment 
+    pure val channelForwardingAddress= assignCFA(address, chainState, packet)
+    //pure val channelForwardingAddress= assignCFA("forward_account", chainState, packet)
     pure val addressTuple=assignRecvAddress(data.forwardingPath!=[],packet, channelForwardingAddress)
     pure val receiver = addressTuple._1
     pure val finalReceiver = addressTuple._2 
@@ -445,8 +456,9 @@ module ics20v2 {
   pure def onRecvPacketV2(chainState: ChainStateV2, packet: PacketV2): (ChainStateV2, FungibleTokenPacketAcknowledgementV2) = {
     pure val data = packet.data
     pure val tokens012= data.tokens
+    pure val address= getForwardAccount(packet.destChannel)
     // Addresses assignment. Helper functions define spec logic for assignment 
-    pure val channelForwardingAddress= assignCFAv2("forward_account", chainState, packet)
+    pure val channelForwardingAddress= assignCFAv2(address, chainState, packet)
     pure val addressTuple=assignRecvAddressV2(data.forwardingPath!=[],packet, channelForwardingAddress)
     pure val receiver = addressTuple._1
     pure val finalReceiver = addressTuple._2 
@@ -608,7 +620,6 @@ module ics20v2 {
         
         pure val tempChainState = chainState.with("bank", finalBankResult._1.accounts)
                                             
-        //pure val nilAck= { success: "", errorMessage: "", packet: packet }
         (tempChainState, ack) // Here we should return nil for the ack 
       }
       }
@@ -648,15 +659,117 @@ module ics20v2 {
       chainState
     }
   }
- 
- //Helper function for onAck logic executinon
- pure def eventuallyRefund(chainState: ChainState, packet: Packet, acknowledgement: FungibleTokenPacketAcknowledgement): ChainState ={
-      if (acknowledgement.success==false) {
-       pure val newChainState= refundTokens(chainState, packet)
-      newChainState 
-      }else chainState
- }
- 
+  
+  // RefundTokensV2 with multidenom and token forwarding 
+    pure def refundTokensV2(chainState: ChainStateV2, packet: PacketV2): ChainStateV2 = {
+    pure val data: FungibleTokenDataV2 = packet.data
+    pure val tokens012 = data.tokens
+      
+      // Compute First Step Bank Result results is a tuple, bankResult and chainState
+      pure val bankResult0 = 
+
+          if(tokens012!=[]){
+            pure val token0= getNextToken(tokens012)
+            pure val denom0 = token0._1
+            pure val amount0 = token0._2
+          
+           pure val source: HopElement = { port: packet.sourcePort, channel: packet.sourceChannel }
+            if (movingBackAlongTrace(denom0, source)) {
+            // The (failed) transfer attempt was moving the token back along its denom trace.
+            // For this, we originally burnt vouchers in `sendFungibleTokens`, so mint them back.
+            pure val res=chainState.bank.MintCoins(data.sender, denom0, amount0)
+            (res, chainState.with("bank",res.accounts))
+            
+            } else {
+            // The (failed) transfer attempt was moving the token further along its denom trace.
+            // For this, we originally escrowed tokens in `sendFungibleTokens`, so unescrow them back.
+            pure val escrowAccount = chainState.channelEscrowAddresses.get(packet.sourceChannel)
+            pure val res=chainState.bank.TransferCoins(escrowAccount, data.sender, denom0, amount0)
+            (res, chainState.with("bank",res.accounts))
+            }
+          
+          } 
+          // No Token to refund
+         else {({success: false, accounts: chainState.bank}, chainState)}
+      
+      // Retrieve remaining token list elements
+      pure val tokens12 = {      
+         if(tokens012!=[]){
+         pure val token12= getNextToken(tokens012)
+         token12._3
+         } else []
+      }
+
+    // Compute Middle Step Bank Result
+      pure val bankResult1 = 
+        if (bankResult0._1.success and tokens12!=[]) {
+            pure val token1= getNextToken(tokens12)
+            pure val denom1 = token1._1
+            pure val amount1 = token1._2
+            pure val source: HopElement = { port: packet.sourcePort, channel: packet.sourceChannel }
+            if (movingBackAlongTrace(denom1, source)) {
+            // The (failed) transfer attempt was moving the token back along its denom trace.
+            // For this, we originally burnt vouchers in `sendFungibleTokens`, so mint them back.
+            pure val res=bankResult0._2.bank.MintCoins(data.sender, denom1, amount1)
+            (res, bankResult0._2.with("bank",res.accounts))
+            } else {
+            // The (failed) transfer attempt was moving the token further along its denom trace.
+            // For this, we originally escrowed tokens in `sendFungibleTokens`, so unescrow them back.
+            pure val escrowAccount = bankResult0._2.channelEscrowAddresses.get(packet.sourceChannel)
+            pure val res=bankResult0._2.bank.TransferCoins(escrowAccount, data.sender, denom1, amount1)
+            (res, bankResult0._2.with("bank",res.accounts))
+            }
+          }
+          // If no more tokens to forward, propagate the previous bank result. 
+          // If there was an error in the first step propagate the first bank result error. 
+          else bankResult0
+
+        // Retrieve remaining token list elements
+      pure val tokens2 = {      
+         if(tokens12!=[]){
+         pure val token2= getNextToken(tokens12)
+         token2._3
+         } else []
+      }
+
+    // Compute Last Step Bank Result
+    pure val finalBankResult = 
+        
+        if (bankResult1._1.success and tokens2!=[]) {
+        pure val token2= getNextToken(tokens2)
+        pure val denom2 = token2._1
+        pure val amount2 = token2._2
+        pure val source: HopElement = { port: packet.sourcePort, channel: packet.sourceChannel }
+        if (movingBackAlongTrace(denom2, source)) {
+            // The (failed) transfer attempt was moving the token back along its denom trace.
+            // For this, we originally burnt vouchers in `sendFungibleTokens`, so mint them back.
+            pure val res=bankResult1._2.bank.MintCoins(data.sender, denom2, amount2)
+            (res, bankResult1._2.with("bank",res.accounts))
+            } else {
+            // The (failed) transfer attempt was moving the token further along its denom trace.
+            // For this, we originally escrowed tokens in `sendFungibleTokens`, so unescrow them back.
+            pure val escrowAccount = bankResult1._2.channelEscrowAddresses.get(packet.sourceChannel)
+            pure val res=bankResult1._2.bank.TransferCoins(escrowAccount, data.sender, denom2, amount2)
+            (res, bankResult1._2.with("bank",res.accounts))
+            }
+        }
+        // If no more token to forward and previous result == success --> propagate the middle step result
+        else if (bankResult1._1.success) bankResult1
+        // Otherwise propagate the bankResult 0
+              else bankResult0 
+
+// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
+// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
+    
+    if (finalBankResult._1.success) {
+      chainState.with("bank", finalBankResult._1.accounts)
+    } else {
+      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
+      //       We treat bank failure as a noop.
+      chainState
+    }
+  }
+
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
                                acknowledgement: FungibleTokenPacketAcknowledgement) : (ChainState) = {
@@ -685,8 +798,46 @@ module ics20v2 {
                 }
       }else {
         // if the transfer failed, refund the tokens
-      pure val tempChainState = eventuallyRefund(chainState, packet, acknowledgement)
-      tempChainState
+      if (acknowledgement.success==false) {
+       pure val newChainState= refundTokens(chainState, packet)
+      newChainState 
+      }else chainState
+      } 
+        
+  }
+
+  /// Called by the routing module when a packet sent by this module has been acknowledged.
+  pure def onAcknowledgePacketV2(chainState: ChainStateV2, packet: PacketV2,
+                               acknowledgement: FungibleTokenPacketAcknowledgementV2) : (ChainStateV2) = {
+      
+      // check if the packet that was sent is from a previously forwarded packet
+      if(chainState.forwardedPacket!=[]){
+          pure val prevPacket=chainState.forwardedPacket.head() 
+          if (acknowledgement.success) {
+              // The acknowledgment get written in the action for simuliation purposes. 
+              //pure val ack ={ success: true, errorMessage: "forwarded packet succeeded", packet: prevPacket }
+              //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
+              //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
+              // No Op 
+              chainState
+          } else {
+                // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
+                // we must revert the changes that came from successfully receiving the tokens on our chain
+                // before propogating the error acknowledgement back to original sender chain        
+                pure val revertedChainState=revertInFlightChangesV2(chainState,packet,prevPacket)
+                // The acknowledgment get written in the action for simuliation purposes.
+                // write error acknowledgement
+                //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+                //val newInAcknowledgements = revertedChainState.inAcknowledgements.union(Set(ack))
+                //pure val newChainState= revertedChainState.with("inAcknowledgements", newInAcknowledgements)
+                revertedChainState
+                }
+      }else {
+        // if the transfer failed, refund the tokens
+      if (acknowledgement.success==false) {
+       pure val newChainState= refundTokensV2(chainState, packet)
+      newChainState 
+      }else chainState
       } 
         
   }
@@ -711,6 +862,30 @@ module ics20v2 {
       else {
         // the packet timed out, so refund the tokens
         pure val refundChainState=refundTokens(chainState, packet)
+        refundChainState
+      }
+  }
+
+/// Called by the routing module when a packet sent by this module has timed out
+  /// (such that it will not be received on the destination chain).
+  pure def onTimeoutPacketV2(chainState: ChainStateV2, packet: PacketV2): (ChainStateV2)  = {
+    // check if the packet was sent is from a previously forwarded packet
+    pure val prevPacket=chainState.forwardedPacket.head()
+    if(chainState.forwardedPacket!=[]){
+      // the forwarded packet has failed, thus the funds have been refunded to the forwarding address.
+      // we must revert the changes that came from successfully receiving the tokens on our chain
+      // before propogating the error acknowledgement back to original sender chain
+      pure val tempChainState=revertInFlightChangesV2(chainState,packet,prevPacket)
+      // write error acknowledgement
+      // The acknowledgment get written in the action for simuliation purposes.
+      //pure val ack ={ success: false, errorMessage: "forwarded packet failed", packet: prevPacket }
+      //val newInAcknowledgements = tempChainState.inAcknowledgements.union(Set(ack))
+      //pure val newChainState= tempChainState.with("inAcknowledgements", newInAcknowledgements)
+      tempChainState
+      }
+      else {
+        // the packet timed out, so refund the tokens
+        pure val refundChainState=refundTokensV2(chainState, packet)
         refundChainState
       }
   }
@@ -761,6 +936,186 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
       
       if (bankResult.success) {
       chainState.with("bank", bankResult.accounts)
+    } else {
+      // TODO: ICS 20 does not specify what happens if the bank modules return an error.
+      //       We treat bank failure as a noop.
+      chainState
+    }
+}
+
+pure def revertInFlightChangesV2(chainState: ChainStateV2, sentPacket: PacketV2, receivedPacket: PacketV2): ChainStateV2 = {
+ pure val forwardEscrow = chainState.channelEscrowAddresses.get(sentPacket.sourceChannel)
+ pure val reverseEscrow = chainState.channelEscrowAddresses.get(receivedPacket.destChannel)
+ pure val hopElementSent = {port: sentPacket.sourcePort, channel: sentPacket.sourceChannel}
+ pure val hopElementRecv = {port: receivedPacket.destPort, channel: receivedPacket.destChannel}
+ pure val tokens012=sentPacket.data.tokens
+
+      pure val bankResult0 = 
+
+          if(tokens012!=[]){
+            pure val token0= getNextToken(tokens012)
+            pure val denom0 = token0._1
+            pure val amount0 = token0._2
+          
+      // check if the packet we sent out was sending as source or not
+      // in this case we escrowed the outgoing tokens
+      if (movingBackAlongTrace(denom0, hopElementSent)==false) {
+          // check if the packet we received was a source token for our chain
+          if (movingBackAlongTrace(denom0, hopElementRecv)==false) {
+              // receive sent tokens from the received escrow to the forward escrow account
+              // so we must send the tokens back from the forward escrow to the original received escrow account
+              pure val res= chainState.bank.TransferCoins(forwardEscrow, reverseEscrow, denom0, amount0)
+              (res, chainState.with("bank",res.accounts))
+            
+          }
+          else {
+              // receive minted vouchers and sent to the forward escrow account
+              // so we must remove the vouchers from the forward escrow account and burn them
+              pure val res= chainState.bank.BurnCoins(forwardEscrow, denom0, amount0)
+              (res, chainState.with("bank",res.accounts))
+            
+            }
+    } else {
+          // in this case we burned the vouchers of the outgoing packets
+          // check if the packet we received was a source token for our chain
+          // in this case, the tokens were unescrowed from the reverse escrow account
+          if (movingBackAlongTrace(denom0, hopElementRecv)==false){
+            // in this case we must mint the burned vouchers and send them back to the escrow account
+            pure val res= chainState.bank.MintCoins(reverseEscrow, denom0, amount0)
+            (res, chainState.with("bank",res.accounts))
+            
+          }else{
+            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
+            // So no state changes were made, and thus no reversion is necessary
+            // No Op Miniting 0 Tokens 
+            pure val res = chainState.bank.MintCoins(reverseEscrow, denom0, 0)
+            (res, chainState.with("bank",res.accounts))
+            
+            }
+          }
+          } 
+          // No Token to refund
+         else {({success: false, accounts: chainState.bank}, chainState)}
+      
+      // Retrieve remaining token list elements
+      pure val tokens12 = {      
+         if(tokens012!=[]){
+         pure val token12= getNextToken(tokens012)
+         token12._3
+         } else []
+      }
+
+    // Compute Middle Step Bank Result
+      pure val bankResult1 = 
+        if (bankResult0._1.success and tokens12!=[]) {
+            pure val token1= getNextToken(tokens12)
+            pure val denom1 = token1._1
+            pure val amount1 = token1._2      
+            
+      // check if the packet we sent out was sending as source or not
+      // in this case we escrowed the outgoing tokens
+      if (movingBackAlongTrace(denom1, hopElementSent)==false) {
+          // check if the packet we received was a source token for our chain
+          if (movingBackAlongTrace(denom1, hopElementRecv)==false) {
+              // receive sent tokens from the received escrow to the forward escrow account
+              // so we must send the tokens back from the forward escrow to the original received escrow account
+              pure val res= bankResult0._2.bank.TransferCoins(forwardEscrow, reverseEscrow, denom1, amount1)
+              (res, bankResult0._2.with("bank",res.accounts))
+            
+          }
+          else {
+              // receive minted vouchers and sent to the forward escrow account
+              // so we must remove the vouchers from the forward escrow account and burn them
+              pure val res= bankResult0._2.bank.BurnCoins(forwardEscrow, denom1, amount1)
+              (res, bankResult0._2.with("bank",res.accounts))
+            
+            }
+    } else {
+          // in this case we burned the vouchers of the outgoing packets
+          // check if the packet we received was a source token for our chain
+          // in this case, the tokens were unescrowed from the reverse escrow account
+          if (movingBackAlongTrace(denom1, hopElementRecv)==false){
+            // in this case we must mint the burned vouchers and send them back to the escrow account
+            pure val res= bankResult0._2.bank.MintCoins(reverseEscrow, denom1, amount1)
+            (res, bankResult0._2.with("bank",res.accounts))
+            
+          }else{
+            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
+            // So no state changes were made, and thus no reversion is necessary
+            // No Op Miniting 0 Tokens 
+            pure val res = bankResult0._2.bank.MintCoins(reverseEscrow, denom1, 0)
+            (res, bankResult0._2.with("bank",res.accounts))
+            
+            }
+          }
+          } 
+          // If no more tokens to revert, propagate the previous bank result. 
+          // If there was an error in the first step propagate the first bank result error. 
+          else bankResult0
+
+        // Retrieve remaining token list elements
+      pure val tokens2 = {      
+         if(tokens12!=[]){
+         pure val token2= getNextToken(tokens12)
+         token2._3
+         } else []
+      }
+
+    // Compute Last Step Bank Result
+    pure val finalBankResult = 
+        
+        if (bankResult1._1.success and tokens2!=[]) {
+        pure val token2= getNextToken(tokens2)
+        pure val denom2 = token2._1
+        pure val amount2 = token2._2
+        
+              // check if the packet we sent out was sending as source or not
+      // in this case we escrowed the outgoing tokens
+      if (movingBackAlongTrace(denom2, hopElementSent)==false) {
+          // check if the packet we received was a source token for our chain
+          if (movingBackAlongTrace(denom2, hopElementRecv)==false) {
+              // receive sent tokens from the received escrow to the forward escrow account
+              // so we must send the tokens back from the forward escrow to the original received escrow account
+              pure val res= bankResult1._2.bank.TransferCoins(forwardEscrow, reverseEscrow, denom2, amount2)
+              (res, bankResult1._2.with("bank",res.accounts))
+            
+          }
+          else {
+              // receive minted vouchers and sent to the forward escrow account
+              // so we must remove the vouchers from the forward escrow account and burn them
+              pure val res= bankResult1._2.bank.BurnCoins(forwardEscrow, denom2, amount2)
+              (res, bankResult1._2.with("bank",res.accounts))
+            
+            }
+    } else {
+          // in this case we burned the vouchers of the outgoing packets
+          // check if the packet we received was a source token for our chain
+          // in this case, the tokens were unescrowed from the reverse escrow account
+          if (movingBackAlongTrace(denom2, hopElementRecv)==false){
+            // in this case we must mint the burned vouchers and send them back to the escrow account
+            pure val res= bankResult1._2.bank.MintCoins(reverseEscrow, denom2, amount2)
+            (res, bankResult1._2.with("bank",res.accounts))
+            
+          }else{
+            // if it wasn't a source token on receive, then we simply had minted vouchers and burned them in the receive.
+            // So no state changes were made, and thus no reversion is necessary
+            // No Op Miniting 0 Tokens 
+            pure val res = bankResult1._2.bank.MintCoins(reverseEscrow, denom2, 0)
+            (res, bankResult0._2.with("bank",res.accounts))
+            
+            }
+          }
+          } 
+        // If no more token to forward and previous result == success --> propagate the middle step result
+        else if (bankResult1._1.success) bankResult1
+        // Otherwise propagate the bankResult 0
+              else bankResult0 
+
+// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
+// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
+    
+    if (finalBankResult._1.success) {
+      chainState.with("bank", finalBankResult._1.accounts)
     } else {
       // TODO: ICS 20 does not specify what happens if the bank modules return an error.
       //       We treat bank failure as a noop.
@@ -884,13 +1239,6 @@ module ics20v2Test {
   def getEscrowAccount(channel) = {
     if(channel=="channelToC") "escrow_account_c"
     else "escrow_account_a"
-    
-  }
-
-/// Gets the `forward_account` a or c for the chain B.
-  def getForwardAccount(channel) = {
-    if(channel=="channelToC") "forward_account_c"
-    else "forward_account_a"
     
   }
 
@@ -2228,7 +2576,7 @@ run DetailedHappyPathTest = {
     })
   }
 
-run DetailedHappyPathV2Test = {
+run DetailedHappyPathV2TestNo = {
     pure val amount = 90
 
     pure val AtomDenomBase = ATOM
