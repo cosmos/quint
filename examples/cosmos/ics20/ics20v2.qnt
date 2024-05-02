@@ -23,7 +23,6 @@ module ics20v2 {
   type ForwardingPath= List[HopElement]
 
   // Ics20v2 types  
- 
   type Token = {
   denom: DenomTrace,
   //trace: str, contained in DenomTrace which has baseDenom and Path   
@@ -80,10 +79,6 @@ module ics20v2 {
     chainState.channels.get(sourceChannel)
   }
 
-  /****************************/
-  /*     public interface     */
-  /****************************/
-
 // Helper function to navigate the token list for multidenom support 
   pure def getNextToken(Tokens: List[Token]): (DenomTrace, UINT256, List[Token]) = {
     pure val headElement = Tokens.head()  // Get the first element
@@ -94,8 +89,10 @@ module ics20v2 {
 
   }
 
-// SendFungibleTokensV2 supporting multidenom and token forwarding
-// To model multidenom we will use 3 as an upper bound on the number of tokens that can be forwarded in a single tx. 
+  /****************************/
+  /*     public interface     */
+  /****************************/
+
 // SendFungibleTokensV2 supports multidenom and token forwarding, using three tokens as the testing 
 // upper limit per transaction. This number allows us to comprehensively address all potential 
 // error scenarios—beginning, middle, or end of the transaction sequence. 
@@ -153,19 +150,20 @@ module ics20v2 {
 
           if (movingBackAlongTrace(denom1, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
-              //(chainStateV2.bank).BurnCoins(sender, denom1, amount1)
               pure val res=bankResult0._2.bank.BurnCoins(sender, denom1, amount1) 
-               (res, chainState.with("bank",res.accounts))
+               (res, bankResult0._2.with("bank",res.accounts))
               
               } else {
                 // escrow tokens
                 pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
                 pure val res= bankResult0._2.bank.TransferCoins(sender, escrowAccount, denom1, amount1)
-                (res, chainState.with("bank",res.accounts))
+                (res, bankResult0._2.with("bank",res.accounts))
               }
+          
           }
           // If no more tokens to forward, propagate the previous bank result. 
-          // If there was an error in the first step propagate the first bank result error. 
+          // Being the first step if there was an error we will propagate the error, otherwise the bankResult
+          // with state changes 
           else bankResult0
 
         // Retrieve remaining token list elements
@@ -179,7 +177,8 @@ module ics20v2 {
     // Compute Last Step Bank Result
     pure val finalBankResult = 
         
-        if (bankResult1._1.success and tokens2!=[]) {
+        if (tokens2!=[]) {
+        if (bankResult1._1.success){
         pure val token2= getNextToken(tokens2)
         pure val denom2 = token2._1
         pure val amount2 = token2._2
@@ -187,22 +186,16 @@ module ics20v2 {
         if (movingBackAlongTrace(denom2, { port: sourcePort, channel: sourceChannel })) {
               // burn vouchers
               pure val res= (bankResult1._2.bank).BurnCoins(sender, denom2, amount2)
-              (res, chainState.with("bank",res.accounts))
+              (res, bankResult1._2.with("bank",res.accounts))
               } else {
                 // escrow tokens
                 pure val escrowAccount = chainState.channelEscrowAddresses.get(sourceChannel)
                 pure val res=bankResult1._2.bank.TransferCoins(sender, escrowAccount, denom2, amount2)
-                (res, chainState.with("bank",res.accounts))
+                (res, bankResult1._2.with("bank",res.accounts))
               }
-        }
-        // If no more token to forward and previous result == success --> propagate the middle step result
-        else if (bankResult1._1.success) bankResult1
-        // Otherwise propagate the bankResult 0
-              else bankResult0 
-
-// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
-// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
-    
+        }else (bankResult1._1,chainState) // If error occurred propagate error and initial chain State (revert) 
+        }else (bankResult1) // If no more token to forward and previous result == success --> propagate the middle step result
+        
     
     if (finalBankResult._1.success) {
 
@@ -289,7 +282,6 @@ module ics20v2 {
             pure val denom0 = token0._1
             pure val amount0 = token0._2
             
-            // HERE PLAY WITH MULTIDENOM LOGIC 
             pure val movingBack = movingBackAlongTrace(denom0, { port: packet.sourcePort, channel: packet.sourceChannel })
             pure val newDenom = updateTrace(movingBack, denom0, { port: packet.destPort, channel: packet.destChannel })
 
@@ -315,7 +307,7 @@ module ics20v2 {
               pure val bankResult = {success: false, accounts: chainState.bank}
               (bankResult, "receive failed",chainState) 
             }
-      //pure val bankResult0 = Result0._1
+      
       // Retrieve remaining token list elements
       pure val tokens12 = {      
          if(tokens012!=[]){
@@ -331,7 +323,6 @@ module ics20v2 {
             pure val denom1 = token1._1
             pure val amount1 = token1._2
             
-            // HERE PLAY WITH MULTIDENOM LOGIC 
             pure val movingBack = movingBackAlongTrace(denom1, { port: packet.sourcePort, channel: packet.sourceChannel })
             pure val newDenom = updateTrace(movingBack, denom1, { port: packet.destPort, channel: packet.destChannel })
 
@@ -368,7 +359,8 @@ module ics20v2 {
     // Compute Last Step Bank Result
     pure val finalBankResult = 
         
-        if (bankResult1._1.success and tokens2!=[]) {
+        if (tokens2!=[]) {
+          if(bankResult1._1.success ){
         pure val token2= getNextToken(tokens2)
         pure val denom2 = token2._1
         pure val amount2 = token2._2
@@ -393,13 +385,9 @@ module ics20v2 {
                                                 .with("receivedTokens",receivedTokens)
                 (bankResult, "mint coins failed",newChainState)
               }
-            }  
-       
-        // If no more token to forward and previous result == success --> propagate the middle step result
-        else if (bankResult1._1.success) bankResult1
-        // Otherwise propagate the bankResult 0
-              else bankResult0 
-
+            }else (bankResult1._1,bankResult1._2,chainState) // If error propagate error and initial chain State (revert)  
+       }else bankResult1 // If no more token to forward and previous result == success --> propagate the middle step result
+        
     
     pure val ack = if (finalBankResult._1.success) {
       { success: true, errorMessage: "", packet: packet }
@@ -525,7 +513,8 @@ module ics20v2 {
     // Compute Last Step Bank Result
     pure val finalBankResult = 
         
-        if (bankResult1._1.success and tokens2!=[]) {
+        if (tokens2!=[]) {
+        if(bankResult1._1.success){
         pure val token2= getNextToken(tokens2)
         pure val denom2 = token2._1
         pure val amount2 = token2._2
@@ -542,14 +531,8 @@ module ics20v2 {
             pure val res=bankResult1._2.bank.TransferCoins(escrowAccount, data.sender, denom2, amount2)
             (res, bankResult1._2.with("bank",res.accounts))
             }
-        }
-        // If no more token to forward and previous result == success --> propagate the middle step result
-        else if (bankResult1._1.success) bankResult1
-        // Otherwise propagate the bankResult 0
-              else bankResult0 
-
-// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
-// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
+        }else (bankResult1._1,chainState) // If there was an error, propagate the error and the initialChainState (revert)
+        }else bankResult1 // If no more token to forward and previous result == success --> propagate the middle step result
     
     if (finalBankResult._1.success) {
       chainState.with("bank", finalBankResult._1.accounts)
@@ -559,7 +542,6 @@ module ics20v2 {
       chainState
     }
   }
-
 
   /// Called by the routing module when a packet sent by this module has been acknowledged.
   pure def onAcknowledgePacket(chainState: ChainState, packet: Packet,
@@ -737,7 +719,8 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
     // Compute Last Step Bank Result
     pure val finalBankResult = 
         
-        if (bankResult1._1.success and tokens2!=[]) {
+        if (tokens2!=[]) {
+          if(bankResult1._1.success){
         pure val token2= getNextToken(tokens2)
         pure val denom2 = token2._1
         pure val amount2 = token2._2
@@ -778,14 +761,8 @@ pure def revertInFlightChanges(chainState: ChainState, sentPacket: Packet, recei
             
             }
           }
-          } 
-        // If no more token to forward and previous result == success --> propagate the middle step result
-        else if (bankResult1._1.success) bankResult1
-        // Otherwise propagate the bankResult 0
-              else bankResult0 
-
-// Logic :: If bankResult0 == False --> bankResult1 == bankResult2 == bankResult0 False by construction. 
-// Logic :: If bankResult1 == False --> bankResult2 == False by construction.  
+          } else (bankResult1._1,chainState) // If error, propagte error and initial chain State. 
+          } else bankResult1 // If no more token to forward and previous result == success --> propagate the middle step result 
     
     if (finalBankResult._1.success) {
       chainState.with("bank", finalBankResult._1.accounts)
@@ -887,15 +864,12 @@ module ics20v2Test {
     chainStates.get(chain).bank.getBalances(account).getBalance(denom)
   }
 
-
 /// Gets the `escrow_account` a or c for the chain B.
   def getEscrowAccount(channel) = {
     if(channel=="channelToC") "escrow_account_c"
     else "escrow_account_a"
     
   }
-
-
 
   /// Send a packet from `sourceChain` to `destChain`, indicating a transfer
   /// of `amount`-many tokens of `denom` from `sender` to `receiver`.
@@ -915,7 +889,6 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
     // (3) Quint state transition:
     chainStates' = chainStates.set(sourceChain, newSourceChainState)
   }
-
 
   // Mock Function to generate an error during the receive 
   action failingReceivePacket(sourceChain: str, destChain: str): bool =
@@ -960,7 +933,6 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
                           .set(sourceChain, newSourceChainState)
       }
     }
-
 
   /// Receive a packet sent from `sourceChain` to `destChain`:
   /// - Pick an arbitrary, previously unreceived packet sent from `sourceChain` to `destChain`.
@@ -1067,7 +1039,6 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
       chainStates' = chainStates.set(receiverChain, newChainState)
     }
 
-
   /// Receive an acknowledgement on `chain`:
   /// - Pick an arbitrary, previously unreceived acknowledgement on `chain`.
   /// - Call the `onAcknowledgePacket` callback on it.
@@ -1107,7 +1078,6 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
         // (3) Quint state transition:
         chainStates' = chainStates.set(chain, newChainState)
     }
-
     }
 
 /// Receive a timeout on `chain`:
@@ -1193,28 +1163,32 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
       receiveAck(sourceChain)
     )
 
+///////////////////////////////////////////////////
+// Note that all test are prefixed with M if are about multidenom logic and F if about forwarding logic.
+// MF are test that execute both logics.  
+
   /****************************************************************************
    * TESTS For Forwarding - always use a single token
    ***************************************************************************/
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/*
-run DetailedHappyPathTest = {
+
+run FDetailedHappyPathTest = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
-    pure val denomSentFromAToB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val AtomDenomBase = ATOM
+    pure val denomSentFromAToB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
     pure val denomSentFromBToC = denomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomSentFromAToB.path))
     init.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
-      setBalanceIn("A", "alice", ATOM, amount)
+      setBalanceIn("A", "alice", AtomDenomBase, amount)
     ).then(
-      sendPacket("A", "B", ATOM, amount, "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+      sendPacket("A", "B", [{denom:AtomDenomBase,amount:amount}], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     ).then(
       receivePacket("A", "B") 
     ).then(
-      sendPacket("B", "C", denomSentFromAToB, amount, "forward_account", "charlie",[])
+      sendPacket("B", "C", [{denom:denomSentFromAToB,amount:amount}], "forward_account", "charlie",[])
     ).then(
       receivePacket("B", "C") 
     ).then(
@@ -1234,10 +1208,10 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == amount),
 
       // check that balance on chain A is empty
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0),
       // check the escrow_account balance on chain A is amount
-      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
 
       // noop
@@ -1245,12 +1219,12 @@ run DetailedHappyPathTest = {
       }
     )
   }
-*/
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // Tansfer happening from A to C using the forwarding path 
   // In quint we need to call twice the sendTransfer to appreciate the state changes.  
-  run HappyPathTest = {
+  run FHappyPathTest = {
     pure val amount = 90
 
     // NOTE: fungible token is prefixed with the full trace in order to verify the packet commitment
@@ -1295,12 +1269,6 @@ run DetailedHappyPathTest = {
     )
   }
 
-
-  /****************************************************************************
-   * TESTS :Forwarding
-   ***************************************************************************/
-
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Scenario 1 test 
   // Init function for scenario 1 
@@ -1325,14 +1293,14 @@ run DetailedHappyPathTest = {
 
 // 
 // Scenario 1 test 
-    run Scenario1Test = {
+    run FScenario1Test = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
+    pure val AtomDenomBase = ATOM
     
-    pure val denomBC = denomInA.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomInA.path))
+    pure val denomBC = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(AtomDenomBase.path))
     
-    pure val denomBCB = denomInA
+    pure val denomBCB = AtomDenomBase
     
     pure val denomCBA = denomBCB.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomBCB.path))
     
@@ -1346,19 +1314,19 @@ run DetailedHappyPathTest = {
     }
     ).then(all{
       
-       val balanceB = getBalanceIn("B", "bob", denomInA)
+       val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
      
       receivePacket("B", "C") 
     }).then(all{
 
-      val balanceB = getBalanceIn("B", "bob", denomInA)
+      val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
@@ -1369,10 +1337,10 @@ run DetailedHappyPathTest = {
       // The chain state before starting the forwardingTransfer should be like this. 
       // Thus at the end of the test we should have the exact chain state that we see here. 
       // No Op. Nothing Happened
-      val balanceB = getBalanceIn("B", "bob", denomInA)
+      val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
@@ -1381,10 +1349,10 @@ run DetailedHappyPathTest = {
       sendPacket("C", "B", [{denom:denomBC, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
 
-      val balanceB = getBalanceIn("B", "bob", denomInA)
+      val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
       
       // This time token get burned 
@@ -1397,37 +1365,35 @@ run DetailedHappyPathTest = {
       receivePacket("C", "B") 
     }).then(all{
       
-      val balanceBt2 = getBalanceIn("B", getForwardAccount("channelToC"), denomInA)
+      val balanceBt2 = getBalanceIn("B", getForwardAccount("channelToC"), AtomDenomBase)
       assert(balanceBt2 == amount), 
 
-      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
       assert(balanceB2 == 0), 
 
       // escrow_account on B should be 0
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == 0),   
 
-      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomBase)
       assert(balanceB3 == 0),   
 
       val balanceC = getBalanceIn("C", "escrow_account", denomBC)
       assert(balanceC == 0),  
 
-      sendPacket("B", "A", [{denom:denomInA, amount: amount }], getForwardAccount("channelToC"), "alice",[])
+      sendPacket("B", "A", [{denom:AtomDenomBase, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     }).then(all{
       
-      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomBase)
       assert(balanceB2 == amount), 
 
-      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB3 == 0), 
 
       // Here during onRecv packet an error ack must be written.  
-      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
-      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
       // I'll mock the erorr. 
       failingReceivePacket("B", "A") 
         
@@ -1435,13 +1401,13 @@ run DetailedHappyPathTest = {
       receiveAck("B") // Refund logic should be properly executed on B
     ).then(all{
 
-      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
       assert(balanceB == 0), 
       
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
 
-      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomBase)
       assert(balanceB3 == 0), 
 
       forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
@@ -1450,19 +1416,19 @@ run DetailedHappyPathTest = {
     ).then(all {
 
       // Check the final chains states are equal to the ones before starting the forwardingTransfer 
-      val balanceB = getBalanceIn("B", "bob", denomInA)
+      val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
 
-      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
 
-      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomBase)
       assert(balanceB3 == 0), 
 
-      val balanceB4 = getBalanceIn("B", getForwardAccount("channelToC"), denomInA)
+      val balanceB4 = getBalanceIn("B", getForwardAccount("channelToC"), AtomDenomBase)
       assert(balanceB4 == 0), 
 
-      val balanceB5 = getBalanceIn("B", getForwardAccount("channelToA"), denomInA)
+      val balanceB5 = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
       assert(balanceB5 == 0), 
 
       val balanceC = getBalanceIn("C", "charlie", denomBC)
@@ -1484,8 +1450,6 @@ run DetailedHappyPathTest = {
  // Init function for scenario 2 
   action initScenario2 = {
     chainStates' = CHAINS.mapBy(chain => {
-      // All accounts are empty, except for Alice in chain A who has 100 atoms
-      //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
       bank: if (chain == "C") Map("charlie" -> Map(ATOM -> 0)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: if (chain == "B") Map("channelToA" -> "escrow_account_a","channelToC" -> "escrow_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
@@ -1501,11 +1465,11 @@ run DetailedHappyPathTest = {
     })
   }
 
-    run Scenario2Test = {
+    run FScenario2Test = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
-    pure val denomCB = denomInA.with("path", [{ port: "transfer", channel: "channelToC" }].concat(denomInA.path))
+    pure val AtomDenomBase = ATOM
+    pure val denomCB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToC" }].concat(AtomDenomBase.path))
     pure val denomBA = denomCB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomCB.path))
     
     initScenario2.then(
@@ -1525,26 +1489,26 @@ run DetailedHappyPathTest = {
       val balanceB3 = getBalanceIn("B", getForwardAccount("channelToC"), denomCB)
       assert(balanceB3 == 0), 
 
-      val balanceC = getBalanceIn("C", "charlie", denomInA)
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomBase)
       assert(balanceC == amount),
         
-      val balanceC2 = getBalanceIn("C", "escrow_account", denomInA)
+      val balanceC2 = getBalanceIn("C", "escrow_account", AtomDenomBase)
       assert(balanceC2 == 0),
       
-      val balanceC3 = getBalanceIn("C", "forward_account", denomInA)
+      val balanceC3 = getBalanceIn("C", "forward_account", AtomDenomBase)
       assert(balanceC3 == 0), 
 
       // Start Forwarding Transfer C -> B -> A
-      sendPacket("C", "B", [{denom:denomInA, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("C", "B", [{denom:AtomDenomBase, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
       
-      val balanceC = getBalanceIn("C", "charlie", denomInA)
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomBase)
       assert(balanceC == 0),
 
-      val balanceC2 = getBalanceIn("C", "escrow_account", denomInA)
+      val balanceC2 = getBalanceIn("C", "escrow_account", AtomDenomBase)
       assert(balanceC2 == amount),
 
-      val balanceC3 = getBalanceIn("C", "forward_account", denomInA)
+      val balanceC3 = getBalanceIn("C", "forward_account", AtomDenomBase)
       assert(balanceC3 == 0),
 
       receivePacket("C", "B") 
@@ -1556,13 +1520,13 @@ run DetailedHappyPathTest = {
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
       assert(balanceB2 == 0),   
 
-      val balanceC = getBalanceIn("C", "charlie", denomInA)
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomBase)
       assert(balanceC == 0),
 
-      val balanceC2 = getBalanceIn("C", "escrow_account", denomInA)
+      val balanceC2 = getBalanceIn("C", "escrow_account", AtomDenomBase)
       assert(balanceC2 == amount),
 
-      val balanceC3 = getBalanceIn("C", "forward_account", denomInA)
+      val balanceC3 = getBalanceIn("C", "forward_account", AtomDenomBase)
       assert(balanceC3 == 0),
       
 
@@ -1576,8 +1540,6 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == amount), 
 
       // Here during onRecv packet an error ack must be written.  
-      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
-      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
       // I'll mock the erorr. 
       failingReceivePacket("B", "A") 
         
@@ -1633,13 +1595,13 @@ run DetailedHappyPathTest = {
       val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomCB)
       assert(balanceB3 == 0), // This should have been reverted to original state before start forwarding transfer. 
       
-      val balanceC = getBalanceIn("C", "charlie", denomInA)
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomBase)
       assert(balanceC == amount),
         
-      val balanceC2 = getBalanceIn("C", "escrow_account", denomInA)
+      val balanceC2 = getBalanceIn("C", "escrow_account", AtomDenomBase)
       assert(balanceC2 == 0),
       
-      val balanceC3 = getBalanceIn("C", "forward_account", denomInA)
+      val balanceC3 = getBalanceIn("C", "forward_account", AtomDenomBase)
       assert(balanceC3 == 0), 
 
       // noop
@@ -1669,17 +1631,17 @@ run DetailedHappyPathTest = {
     })
   }
 
-    run Scenario3Test = {
+    run FScenario3Test = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
-    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val AtomDenomBase = ATOM
+    pure val denomAB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
     pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
     
 
-    pure val denomBC = denomInA.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomInA.path))
+    pure val denomBC = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(AtomDenomBase.path))
     
-    pure val denomBCB = denomInA
+    pure val denomBCB = AtomDenomBase
     
     pure val denomCBA = denomBCB.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomBCB.path))
     
@@ -1690,14 +1652,14 @@ run DetailedHappyPathTest = {
     ).then({
       // Forwarding Transfer A to C is composed of Forwarding Transfer A to B and B to C
       // Forwarding Transfer A to B
-      sendPacket("A", "B", [{denom:denomInA, amount: amount }], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
+      sendPacket("A", "B", [{denom:AtomDenomBase, amount: amount }], "alice", "charlie",[{ port: "transfer", channel: "channelToC" }])
     }
     ).then(all{
       
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0),
 
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == amount), 
      
       receivePacket("A", "B") 
@@ -1749,7 +1711,7 @@ run DetailedHappyPathTest = {
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomAB)
       assert(balanceB2 == amount), 
 
-      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomABC)
@@ -1802,8 +1764,6 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == 0), 
 
       // Here during onRecv packet an error ack must be written.  
-      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
-      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
       // I'll mock the erorr. 
       failingReceivePacket("B", "A") 
         
@@ -1828,7 +1788,7 @@ run DetailedHappyPathTest = {
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomAB)
       assert(balanceB2 == amount), 
 
-      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount), 
 
       val balanceC = getBalanceIn("C", "charlie", denomABC)
@@ -1845,8 +1805,6 @@ run DetailedHappyPathTest = {
 // In this scenario only Chain A and B are involved. No need to preset per channel escrow and forwarding addresses
   action initScenario4 = {
     chainStates' = CHAINS.mapBy(chain => {
-      // All accounts are empty, except for Alice in chain A who has 100 atoms
-      //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
       bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0),"alex" -> Map(ATOM -> 0)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
@@ -1862,11 +1820,11 @@ run DetailedHappyPathTest = {
     })
   }
 
-    run Scenario4Test = {
+    run FScenario4Test = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
-    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val AtomDenomBase = ATOM
+    pure val denomAB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
     
     initScenario4.then(
       // Make sure that charlie has enough tokens on chain A. In the go test, this
@@ -1876,13 +1834,13 @@ run DetailedHappyPathTest = {
       // The chain state before starting the forwardingTransfer should be like this. 
       // Thus at the end of the test we should have the exact chain state that we see here. 
 
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == amount),
         
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == 0),
       
-      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      val balanceA3 = getBalanceIn("A", "forward_account", AtomDenomBase)
       assert(balanceA3 == 0), 
 
       val balanceB = getBalanceIn("B", "bob", denomAB)
@@ -1895,16 +1853,16 @@ run DetailedHappyPathTest = {
       assert(balanceB3 == 0), 
 
       // Start Forwarding Transfer A -> B -> A
-      sendPacket("A", "B", [{denom:denomInA, amount: amount }], "alice", "alex",[{ port: "transfer", channel: "channelToA" }])
+      sendPacket("A", "B", [{denom:AtomDenomBase, amount: amount }], "alice", "alex",[{ port: "transfer", channel: "channelToA" }])
     }).then(all{
       
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0),
 
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == amount),
 
-      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      val balanceA3 = getBalanceIn("A", "forward_account", AtomDenomBase)
       assert(balanceA3 == 0),
 
       // Ok Receive, Apply state changes on B 
@@ -1917,16 +1875,16 @@ run DetailedHappyPathTest = {
       val balanceB2 = getBalanceIn("B", "escrow_account", denomAB)
       assert(balanceB2 == 0),   
 
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0),
 
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == amount),
 
-      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      val balanceA3 = getBalanceIn("A", "forward_account", AtomDenomBase)
       assert(balanceA3 == 0),
       
-      val balanceA4 = getBalanceIn("A", "alex", denomInA)
+      val balanceA4 = getBalanceIn("A", "alex", AtomDenomBase)
       assert(balanceA4 == 0),
       
 
@@ -1941,8 +1899,6 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == 0), 
 
       // Here during onRecv packet an error ack must be written.  
-      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
-      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
       // I'll mock the erorr. 
       // Failing Receive, Do not apply state changes on A 
       failingReceivePacket("B", "A") 
@@ -1950,13 +1906,13 @@ run DetailedHappyPathTest = {
     }).then(all{
       
       // No Op
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0), 
 
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == amount), 
 
-      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      val balanceA3 = getBalanceIn("A", "forward_account", AtomDenomBase)
       assert(balanceA3 == 0), 
 
       // Ack on B 
@@ -1979,16 +1935,16 @@ run DetailedHappyPathTest = {
 
       // Check the final chains states are equal to the ones before starting the forwardingTransfer 
 
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == amount), 
 
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == 0), // This should have been reverted to original state before start forwarding transfer. 
       
-      val balanceA3 = getBalanceIn("A", "forward_account", denomInA)
+      val balanceA3 = getBalanceIn("A", "forward_account", AtomDenomBase)
       assert(balanceA3 == 0), 
 
-      val balanceA4 = getBalanceIn("A", "alex", denomInA)
+      val balanceA4 = getBalanceIn("A", "alex", AtomDenomBase)
       assert(balanceA4 == 0),
 
       val balanceB = getBalanceIn("B", "bob", denomAB)
@@ -2045,11 +2001,11 @@ run DetailedHappyPathTest = {
     })
   }
 
-  run Scenario5Test = {
+  run FScenario5Test = {
     pure val amount = 90
 
-    pure val denomInA = ATOM
-    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val AtomDenomBase = ATOM
+    pure val denomAB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
     pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
     
     initScenario5.then(
@@ -2066,10 +2022,10 @@ run DetailedHappyPathTest = {
     ).then(all{
       
       // alice balance should be 0 
-      val balanceA = getBalanceIn("A", "alice", denomInA)
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceA == 0), 
       // escrow_account on A should be amount  
-      val balanceA2 = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA2 == amount), 
        // bob balance on B should B amount
       val balanceB = getBalanceIn("B", "bob", denomAB)
@@ -2085,7 +2041,7 @@ run DetailedHappyPathTest = {
       // Again same checks on B and C 
       // The chain state before starting the forwardingTransfer should be like this. 
       // Thus at the end of the test we should have the exact chain state that we see here. 
-      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
 
 
@@ -2118,11 +2074,8 @@ run DetailedHappyPathTest = {
       
       val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomAB)
       assert(balanceB == 0),
-      //val balanceA = getBalanceIn("A", "alice", denomABC)
-      //assert(balanceA == amount),
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), denomAB)
       assert(balanceB2 == 0), 
-
       // Here during onRecv packet an error ack must be written.  
       receivePacket("B", "A") // This fails because we have manipulated balance in A escrow_account 
         
@@ -2131,10 +2084,8 @@ run DetailedHappyPathTest = {
     ).then(all{
       val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), denomAB)
       assert(balanceB == 0),
-      
       val balanceB = getBalanceIn("B", getEscrowAccount("channelToC"), denomAB)
       assert(balanceB == amount), // This should have been reverted to original state before start forwarding transfer. 
-      
 
       forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
       }
@@ -2143,11 +2094,9 @@ run DetailedHappyPathTest = {
 
       val balanceC = getBalanceIn("C", "charlie", denomABC)
       assert(balanceC == amount),
-
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomAB)
       assert(balanceB2 == amount),
-
-      val balanceA = getBalanceIn("A", "escrow_account", denomInA)
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == 89),
 
       // noop
@@ -2178,7 +2127,7 @@ run DetailedHappyPathTest = {
     })
   }
 
-run DetailedHappyPathTest = {
+run MFHappyPathTest = {
     pure val amount = 90
 
     pure val AtomDenomBase = ATOM
@@ -2207,10 +2156,8 @@ run DetailedHappyPathTest = {
     ).then(all{
       val balanceC = getBalanceIn("A", "alice", AtomDenomBase)
       assert(balanceC == 0),
-
       val balanceC = getBalanceIn("A", "alice", EthDenomBase)
       assert(balanceC == 0),
-
       val balanceC = getBalanceIn("A", "alice", OsmoDenomBase)
       assert(balanceC == 0),
 
@@ -2228,24 +2175,23 @@ run DetailedHappyPathTest = {
       // check that the balance is updated on chainC
       val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromBToC)
       assert(balanceC == amount),
-
-       val balanceC1 = getBalanceIn("C", "charlie", OsmoDenomSentFromBToC)
+      val balanceC1 = getBalanceIn("C", "charlie", OsmoDenomSentFromBToC)
       assert(balanceC1 == amount),
-
-
-       val balanceC2 = getBalanceIn("C", "charlie", EthDenomSentFromBToC)
+      val balanceC2 = getBalanceIn("C", "charlie", EthDenomSentFromBToC)
       assert(balanceC2 == amount),
 
       // check that balance on chain B is empty
       val balanceB = getBalanceIn("B", "bob", AtomDenomSentFromAToB)
       assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", "bob", OsmoDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", "bob", EthDenomSentFromAToB)
+      assert(balanceB == 0),
       // check the escrow_account balance on chain B is amount
       val balanceB2 = getBalanceIn("B", "escrow_account", AtomDenomSentFromAToB)
       assert(balanceB2 == amount),
-
       val balanceB2 = getBalanceIn("B", "escrow_account", OsmoDenomSentFromAToB)
       assert(balanceB2 == amount),
-
       val balanceB2 = getBalanceIn("B", "escrow_account", EthDenomSentFromAToB)
       assert(balanceB2 == amount),
 
@@ -2255,11 +2201,9 @@ run DetailedHappyPathTest = {
       // check the escrow_account balance on chain A is amount
       val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
-
-         val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
+      val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
       assert(balanceA == amount),
-
-         val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
+      val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
       assert(balanceA == amount),
 
       // noop
@@ -2273,8 +2217,6 @@ run DetailedHappyPathTest = {
   // Init function for scenario 1 
   action initScenario1mf = {
     chainStates' = CHAINS.mapBy(chain => {
-      // All accounts are empty, except for Alice in chain A who has 100 atoms
-      //bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else if (chain == "B") Map("bob" -> Map(ATOM -> 100)) else if (chain == "C") Map("charlie" -> Map(ATOM -> 100)) else Map(),
       bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0)) else if (chain == "B") Map("bob" -> Map(ATOM -> 0, OSMO ->0, ETH ->0)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: if (chain == "B") Map("channelToA" -> "escrow_account_a","channelToC" -> "escrow_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
@@ -2290,9 +2232,8 @@ run DetailedHappyPathTest = {
     })
   }
 
-// 
 // Scenario 1 test 
-    run Scenario1mfTest = {
+    run MFScenario1Test = {
     pure val amount = 90
     pure val AtomDenomBase = ATOM
     pure val AtomDenomSentFromBToC = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(AtomDenomBase.path))
@@ -2322,19 +2263,14 @@ run DetailedHappyPathTest = {
       
        val balanceB = getBalanceIn("B", "bob", AtomDenomBase)
       assert(balanceB == 0),
-
       val balanceB = getBalanceIn("B", "bob", EthDenomBase)
       assert(balanceB == 0),
-
       val balanceB = getBalanceIn("B", "bob", OsmoDenomBase)
       assert(balanceB == 0),
-
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
       assert(balanceB2 == amount), 
-
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), OsmoDenomBase)
       assert(balanceB2 == amount), 
-
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), EthDenomBase)
       assert(balanceB2 == amount), 
      
@@ -2343,10 +2279,8 @@ run DetailedHappyPathTest = {
 
       val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromBToC)
       assert(balanceC == amount),
-
       val balanceC = getBalanceIn("C", "charlie", OsmoDenomSentFromBToC)
       assert(balanceC == amount),
-
       val balanceC = getBalanceIn("C", "charlie", EthDenomSentFromBToC)
       assert(balanceC == amount),
 
@@ -2405,9 +2339,6 @@ run DetailedHappyPathTest = {
       assert(balanceB3 == 0),   
       val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomBase)
       assert(balanceB3 == 0),   
-      
-      //val balanceC = getBalanceIn("C", "escrow_account", denomBC)
-      //assert(balanceC == 0),  
 
       sendPacket("B", "A", [{denom:AtomDenomBase, amount: amount }, {denom:OsmoDenomBase, amount: amount }, {denom:EthDenomBase, amount: amount }], getForwardAccount("channelToC"), "alice",[])
     }).then(all{
@@ -2427,28 +2358,33 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == amount), 
 
       // Here during onRecv packet an error ack must be written.  
-      // Probably here we should create a fakeErrorReceive. Here token are minted for the first time. How to make it error?
-      // I can't imagine a scenario to make this fail without doing a previous transfer A to B 
       // I'll mock the erorr. 
       // Change the balance into B escrow account to make the receive function fail 
-      //setBalanceIn("B", getEscrowAccount("channelToA"), OsmoDenomBase, amount-1)
       failingReceivePacket("B", "A") 
-    //}).then({
-
-    // receivePacket("B", "A") 
-        
     }).then(
       receiveAck("B") // Refund logic should be properly executed on B
     ).then(all{
 
-      //val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
-      //assert(balanceB == 0), 
-      
-      //val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), denomInA)
-      //assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), AtomDenomBase)
+      assert(balanceB == 0), 
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), OsmoDenomBase)
+      assert(balanceB == 0), 
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToA"), EthDenomBase)
+      assert(balanceB == 0), 
 
-      //val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), denomInA)
-      //assert(balanceB3 == 0), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomBase)
+      assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), OsmoDenomBase)
+      assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), EthDenomBase)
+      assert(balanceB2 == amount), // This should have been reverted to original state before start forwarding transfer. 
+
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomBase)
+      assert(balanceB3 == 0), 
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), OsmoDenomBase)
+      assert(balanceB3 == 0), 
+      val balanceB3 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomBase)
+      assert(balanceB3 == 0), 
 
       forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
       }
@@ -2555,7 +2491,7 @@ run DetailedHappyPathTest = {
     })
   }
 
-  run Scenario5mfFirstTokenTest = {
+  run MFScenario5FirstTokenTest = {
     pure val amount = 90
 
     pure val AtomDenomBase = ATOM
@@ -2569,10 +2505,6 @@ run DetailedHappyPathTest = {
     pure val EthDenomBase = ETH
     pure val EthDenomSentFromAToB = EthDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(EthDenomBase.path))
     pure val EthDenomSentFromAToBtoC = EthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(EthDenomSentFromAToB.path))
-    
-    pure val denomInA = ATOM
-    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
-    pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
     
     initScenario5mf.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
@@ -2621,10 +2553,7 @@ run DetailedHappyPathTest = {
     ).then(
       receiveAck("B") 
     ).then(all{
-      //assert(false),
-      // Again same checks on B and C 
-      // The chain state before starting the forwardingTransfer should be like this. 
-      // Thus at the end of the test we should have the exact chain state that we see here. 
+      
       val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
       val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
@@ -2648,10 +2577,8 @@ run DetailedHappyPathTest = {
 
       val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromAToBtoC)
       assert(balanceC == amount),
-
       val balanceC = getBalanceIn("C", "charlie", OsmoDenomSentFromAToBtoC)
       assert(balanceC == amount),
-
       val balanceC = getBalanceIn("C", "charlie", EthDenomSentFromAToBtoC)
       assert(balanceC == amount),
       // Start Forwarding Transfer C -> B -> A
@@ -2674,7 +2601,7 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == 0), 
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomSentFromAToB)
       assert(balanceB2 == 0), 
-      
+      // Note: We here manipulate the first token balance 
       // Manipulate Escrow Balance on Chain A. This should be sufficient to make the transfer from B -> A succed
       // And the onRecv function on A to generate an error ack.       
       setBalanceIn("A", "escrow_account", AtomDenomBase, amount-1)  
@@ -2773,7 +2700,7 @@ run DetailedHappyPathTest = {
 // Scenario5 Test Last Token Failing
 // We want to test C->B->A with an error ack happening on B->A. Thus we want to verify everything get reverted properly 
  // Initialize the protocol
-  run Scenario5mfLastTokenTest = {
+  run MFScenario5LastTokenTest = {
     pure val amount = 90
 
     pure val AtomDenomBase = ATOM
@@ -2839,10 +2766,7 @@ run DetailedHappyPathTest = {
     ).then(
       receiveAck("B") 
     ).then(all{
-      //assert(false),
-      // Again same checks on B and C 
-      // The chain state before starting the forwardingTransfer should be like this. 
-      // Thus at the end of the test we should have the exact chain state that we see here. 
+     
       val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
       assert(balanceA == amount),
       val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
@@ -2892,7 +2816,7 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == 0), 
       val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomSentFromAToB)
       assert(balanceB2 == 0), 
-      
+      // Note: We here manipulate the Last token balance 
       // Manipulate Escrow Balance on Chain A. This should be sufficient to make the transfer from B -> A succed
       // And the onRecv function on A to generate an error ack.       
       setBalanceIn("A", "escrow_account", EthDenomBase, amount-1)  
@@ -2958,17 +2882,232 @@ run DetailedHappyPathTest = {
       assert(balanceB2 == amount),
 
       val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
-      assert(balanceA == amount), // Same as the modified balance
+      assert(balanceA == amount), 
       val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
       assert(balanceA == amount),
       val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
-      assert(balanceA == 89),
+      assert(balanceA == 89),// Same as the modified balance
 
       // noop
       chainStates' = chainStates
       }
     )
   }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Scenario5 Test 
+// Inspiring test from ics20.qnt
+//// Test producing a failed acknowledgement:
+  //
+  // 1. Transfer 50 tokens from Alice on chain A to Bob on chain B.
+  // 2. Manipulate the escrow account on chain A, to contain less than 50 tokens.
+  //    This will provoke the transfer below to produce a failed acknowledgement.
+  // 3. Try to transfer the 50 tokens back from Bob to Alice.
+  //    3.1 First, this burns Bob's 50 vouchers on chain B, and sends a packet to chain A.
+  //    3.2 Receipt of the packet on chain A calls the `onRecvPacket` callback.
+  //    3.3 `onRecvPacket` calls the bank module's `TransferCoins` to unescrow 50 tokens to Alice.
+  //    3.4 `TransferCoins` returns an error, because -- after manipulating it in (2) -- the escrow account has insufficient funds.
+  //    3.5 The bank module error causes `onRecvPacket` to return a failed acknowledgement.
+  //    3.6 `onAcknowledgePacket` on chain "B" re-mints the burned vouchers to Bob.
+
+
+// Scenario5 Test Middle Token Failing
+// We want to test C->B->A with an error ack happening on B->A. Thus we want to verify everything get reverted properly 
+ // Initialize the protocol
+  run MFScenario5MiddleTokenTest = {
+    pure val amount = 90
+
+    pure val AtomDenomBase = ATOM
+    pure val AtomDenomSentFromAToB = AtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(AtomDenomBase.path))
+    pure val AtomDenomSentFromAToBtoC = AtomDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(AtomDenomSentFromAToB.path))
+    
+    pure val OsmoDenomBase = OSMO
+    pure val OsmoDenomSentFromAToB = OsmoDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(OsmoDenomBase.path))
+    pure val OsmoDenomSentFromAToBtoC = OsmoDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(OsmoDenomSentFromAToB.path))
+    
+    pure val EthDenomBase = ETH
+    pure val EthDenomSentFromAToB = EthDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(EthDenomBase.path))
+    pure val EthDenomSentFromAToBtoC = EthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(EthDenomSentFromAToB.path))
+    
+    pure val denomInA = ATOM
+    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
+    pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
+    
+    initScenario5mf.then(
+      // Make sure that Alice has enough tokens on chain A. In the go test, this
+      // is implicitly done somewhere in the test environment setup.
+      setBalanceIn("A", "alice", AtomDenomBase, amount)
+    ).then(
+      setBalanceIn("A", "alice", OsmoDenomBase, amount)
+    ).then(
+      setBalanceIn("A", "alice", EthDenomBase, amount)
+    ).then(
+      // Normal Transfer A to B
+      sendPacket("A", "B", [{denom:AtomDenomBase, amount: amount }, {denom:OsmoDenomBase, amount: amount }, {denom:EthDenomBase, amount: amount }], "alice", "bob",[])
+    ).then(
+      receivePacket("A", "B") 
+    ).then(
+      receiveAck("A") 
+    ).then(all{
+      
+      // alice balance should be 0 
+      val balanceA = getBalanceIn("A", "alice", AtomDenomBase)
+      assert(balanceA == 0),  
+      val balanceA = getBalanceIn("A", "alice", OsmoDenomBase)
+      assert(balanceA == 0),  
+      val balanceA = getBalanceIn("A", "alice", OsmoDenomBase)
+      assert(balanceA == 0), 
+      // escrow_account on A should be amount  
+      val balanceA2 = getBalanceIn("A", "escrow_account", AtomDenomBase)
+      assert(balanceA2 == amount), 
+      val balanceA2 = getBalanceIn("A", "escrow_account", OsmoDenomBase)
+      assert(balanceA2 == amount), 
+      val balanceA2 = getBalanceIn("A", "escrow_account", EthDenomBase)
+      assert(balanceA2 == amount), 
+      
+      // bob balance on B should B amount
+      val balanceB = getBalanceIn("B", "bob", AtomDenomSentFromAToB)
+      assert(balanceB == amount), 
+      val balanceB = getBalanceIn("B", "bob", OsmoDenomSentFromAToB)
+      assert(balanceB == amount), 
+      val balanceB = getBalanceIn("B", "bob", EthDenomSentFromAToB)
+      assert(balanceB == amount), 
+
+      // Normal Transfer B to C
+      sendPacket("B", "C", [{denom:AtomDenomSentFromAToB, amount: amount },{denom:OsmoDenomSentFromAToB, amount: amount },{denom:EthDenomSentFromAToB, amount: amount }], "bob", "charlie",[])
+    }).then(
+      receivePacket("B", "C") 
+    ).then(
+      receiveAck("B") 
+    ).then(all{
+      
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
+      assert(balanceA == amount),
+      val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
+      assert(balanceA == amount),
+      val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
+      assert(balanceA == amount),
+
+      val balanceB = getBalanceIn("B", "bob", AtomDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", "bob", OsmoDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", "bob", EthDenomSentFromAToB)
+      assert(balanceB == 0),
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+
+      val balanceC = getBalanceIn("C", "charlie", OsmoDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+
+      val balanceC = getBalanceIn("C", "charlie", EthDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+      // Start Forwarding Transfer C -> B -> A
+      sendPacket("C", "B", [{denom:AtomDenomSentFromAToBtoC, amount: amount },{denom:OsmoDenomSentFromAToBtoC, amount: amount },{denom:EthDenomSentFromAToBtoC, amount: amount }], "charlie", "alice",[{ port: "transfer", channel: "channelToA" }])
+    }).then(all{
+      receivePacket("C", "B") 
+    }).then(all{
+
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+      val balanceB2 = getBalanceIn("B", getForwardAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB2 == amount), 
+      // escrow_account on B should be 0
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), OsmoDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+      // Note: We here manipulate the middle token balance 
+      // Manipulate Escrow Balance on Chain A. This should be sufficient to make the transfer from B -> A succed
+      // And the onRecv function on A to generate an error ack.       
+      setBalanceIn("A", "escrow_account", OsmoDenomBase, amount-1)  
+    }).then(
+      // The sendFungibleTokens here must succed  
+      sendPacket("B", "A", [{denom:AtomDenomSentFromAToB, amount: amount },{denom:OsmoDenomSentFromAToB, amount: amount },{denom:EthDenomSentFromAToB, amount: amount }], getForwardAccount("channelToC"), "alice",[])
+    ).then(all{
+      
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB == 0),
+      
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), AtomDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), OsmoDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToA"), EthDenomSentFromAToB)
+      assert(balanceB2 == 0), 
+
+      // Here during onRecv packet an error ack must be written.  
+      receivePacket("B", "A") // This fails because we have manipulated balance in A escrow_account 
+        
+    }).then(
+      receiveAck("B") // Error ack is properly written here. // Refund logic properly executed on B
+    ).then(all{
+      
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB == 0),
+      val balanceB = getBalanceIn("B", getForwardAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB == 0),
+      
+      val balanceB = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB == amount), // This should have been reverted to original state before start forwarding transfer. 
+      val balanceB = getBalanceIn("B", getEscrowAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB == amount), // This should have been reverted to original state before start forwarding transfer. 
+      val balanceB = getBalanceIn("B", getEscrowAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB == amount), // This should have been reverted to original state before start forwarding transfer. 
+      
+      forwardAck("B","C") // AdHoc ForwardAck function. Needed to pick the right acknw
+      }
+       
+    ).then(all {
+
+      val balanceC = getBalanceIn("C", "charlie", AtomDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+      val balanceC = getBalanceIn("C", "charlie", OsmoDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+      val balanceC = getBalanceIn("C", "charlie", OsmoDenomSentFromAToBtoC)
+      assert(balanceC == amount),
+
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), AtomDenomSentFromAToB)
+      assert(balanceB2 == amount),
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), OsmoDenomSentFromAToB)
+      assert(balanceB2 == amount),
+      val balanceB2 = getBalanceIn("B", getEscrowAccount("channelToC"), EthDenomSentFromAToB)
+      assert(balanceB2 == amount),
+
+      val balanceA = getBalanceIn("A", "escrow_account", AtomDenomBase)
+      assert(balanceA == amount), // Same as the modified balance
+      val balanceA = getBalanceIn("A", "escrow_account", OsmoDenomBase)
+      assert(balanceA == 89),
+      val balanceA = getBalanceIn("A", "escrow_account", EthDenomBase)
+      assert(balanceA == amount),
+
+      // noop
+      chainStates' = chainStates
+      }
+    )
+  }
+
 
 
 /* ***************************************************************************
