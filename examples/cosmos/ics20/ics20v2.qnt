@@ -1107,6 +1107,24 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
   pure val ATOM = toDenom("atom")
   pure val OSMO = toDenom("osmo")
   pure val ETH = toDenom("eth")
+  // All these denoms are for the invariant testing. 
+  // Potentially we could add all the possible denom combinations. 
+  pure val InvAtomDenomBase = ATOM
+  pure val InvAtomDenomSentFromAToB = InvAtomDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(InvAtomDenomBase.path))
+  pure val InvAtomDenomSentFromAToBtoC = InvAtomDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvAtomDenomSentFromAToB.path))
+  pure val InvAtomDenomSentFromBtoC = InvAtomDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvAtomDenomBase.path))
+  
+  pure val InvOsmoDenomBase = OSMO
+  pure val InvOsmoDenomSentFromAToB = InvOsmoDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(InvOsmoDenomBase.path))
+  pure val InvOsmoDenomSentFromAToBtoC = InvOsmoDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvOsmoDenomSentFromAToB.path))    
+  pure val InvOsmoDenomSentFromBtoC = InvOsmoDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvOsmoDenomBase.path))
+  
+  pure val InvEthDenomBase = ETH
+  pure val InvEthDenomSentFromAToB = InvEthDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(InvEthDenomBase.path))
+  pure val InvEthDenomSentFromAToBtoC = InvEthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvEthDenomSentFromAToB.path))    
+  pure val InvEthDenomSentFromBtoC = InvEthDenomBase.with("path", [{ port: "transfer", channel: "channelToB" }].concat(InvEthDenomBase.path))
+  
+  pure val ALL_DENOMS = Set(InvAtomDenomBase,InvAtomDenomSentFromAToB,InvAtomDenomSentFromAToBtoC,InvAtomDenomSentFromBtoC,InvOsmoDenomBase,InvOsmoDenomSentFromAToB,InvOsmoDenomSentFromAToBtoC,InvOsmoDenomSentFromBtoC,InvEthDenomBase, InvEthDenomSentFromAToB,InvEthDenomSentFromAToBtoC, InvEthDenomSentFromBtoC)
   pure val USER_ACCOUNTS = Set("alice", "bob", "charlie")
   pure val ESCROW_ACCOUNT = "escrow_account"
 
@@ -2929,11 +2947,7 @@ run MFHappyPathTest = {
     pure val EthDenomBase = ETH
     pure val EthDenomSentFromAToB = EthDenomBase.with("path", [{ port: "transfer", channel: "channelToA" }].concat(EthDenomBase.path))
     pure val EthDenomSentFromAToBtoC = EthDenomSentFromAToB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(EthDenomSentFromAToB.path))
-    
-    pure val denomInA = ATOM
-    pure val denomAB = denomInA.with("path", [{ port: "transfer", channel: "channelToA" }].concat(denomInA.path))
-    pure val denomABC = denomAB.with("path", [{ port: "transfer", channel: "channelToB" }].concat(denomAB.path))
-    
+     
     initScenario5mf.then(
       // Make sure that Alice has enough tokens on chain A. In the go test, this
       // is implicitly done somewhere in the test environment setup.
@@ -3118,18 +3132,35 @@ run MFHappyPathTest = {
 // quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNonNegative --main=ics20v2Test ics20v2.qnt --verbosity=2
 // The balance of all denominations in all accounts is always non-negative.
   val BalanceNonNegative = CHAINS.forall(chain =>
-      USER_ACCOUNTS.forall(addr =>
-        chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) >= 0
+      USER_ACCOUNTS.forall(addr => ALL_DENOMS.forall(denom =>
+        chainStates.get(chain).bank.getBalances(addr).getBalance(denom)>= 0
     )
+  )
   )
 
 // To check in random simulator:
 // quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNeverBiggerThanAmount --main=ics20v2Test ics20v2.qnt --verbosity=2
 // The balance of all denominations in all accounts is always non bigger than the transacted amount = 90.
   val BalanceNeverBiggerThanAmount = CHAINS.forall(chain =>
-      USER_ACCOUNTS.forall(addr =>
-        chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) <= 90
+      USER_ACCOUNTS.forall(addr => ALL_DENOMS.forall(denom =>
+        chainStates.get(chain).bank.getBalances(addr).getBalance(denom) <= 90
     )
+  )
+  )
+// To check in random simulator:
+// quint run --max-samples=1000 --max-steps=1000 --invariant=SumBalancesNeverBiggerThanAmount --main=ics20v2Test ics20v2.qnt --verbosity=2
+// The sum of users balance on different chains of all denominations in all accounts is always non bigger than the transacted amount = 90.
+  val SumBalancesNeverBiggerThanAmount = CHAINS.forall(chain =>
+      ALL_DENOMS.forall(denom =>
+      val alice=
+        chainStates.get(chain).bank.getBalances("alice").getBalance(denom) 
+      val bob=
+        chainStates.get(chain).bank.getBalances("bob").getBalance(denom) 
+      val charlie=
+        chainStates.get(chain).bank.getBalances("charlie").getBalance(denom)
+      val sum=alice+bob+charlie
+      sum <=90
+  )
   )
 
 }
