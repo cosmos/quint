@@ -1114,7 +1114,7 @@ action sendPacket(sourceChain: str, destChain: str, tokens: List[Token],
   // this init function must be defined to run the simulator. 
   action init = {
     chainStates' = CHAINS.mapBy(chain => {
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 90)) else Map(),
       channels: channelCounterparties.get(chain),
       channelEscrowAddresses: channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
@@ -1986,7 +1986,7 @@ run FDetailedHappyPathTest = {
  // Initialize the protocol
   action initScenario5 = {
     chainStates' = CHAINS.mapBy(chain => {
-      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 100)) else Map(),
+      bank: if (chain == "A") Map("alice" -> Map(ATOM -> 0)) else Map(),
       channels: channelCounterparties.get(chain),
        channelEscrowAddresses: if (chain == "B") Map("channelToA" -> "escrow_account_a","channelToC" -> "escrow_account_c" ) else channelCounterparties.get(chain).keys().mapBy(_ => ESCROW_ACCOUNT),
       // Verify what channelForwardingAddresses should be initialized to 
@@ -3114,18 +3114,22 @@ run MFHappyPathTest = {
    * INVARIANTS
    * **************************************************************************/
 
-  // To check in random simulator:
-  // $ quint run --main=ics20Test --invariant=BalanceNonNegative ics20.qnt
- // quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNonNegative --main=ics20v2Test ics20v2.qnt --verbosity=2
-  // The balance of all denominations in all accounts is always non-negative.
+// To check in random simulator:
+// quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNonNegative --main=ics20v2Test ics20v2.qnt --verbosity=2
+// The balance of all denominations in all accounts is always non-negative.
   val BalanceNonNegative = CHAINS.forall(chain =>
       USER_ACCOUNTS.forall(addr =>
         chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) >= 0
     )
   )
 
-  // Add invariants 
-  // 1. SUM USERS BALANCE IS CONSTANT = Amount 
-  // 2. Denoms amount are constant = amount
+// To check in random simulator:
+// quint run --max-samples=1000 --max-steps=1000 --invariant=BalanceNeverBiggerThanAmount --main=ics20v2Test ics20v2.qnt --verbosity=2
+// The balance of all denominations in all accounts is always non bigger than the transacted amount = 90.
+  val BalanceNeverBiggerThanAmount = CHAINS.forall(chain =>
+      USER_ACCOUNTS.forall(addr =>
+        chainStates.get(chain).bank.getBalances(addr).getBalance(ATOM) <= 90
+    )
+  )
 
 }
