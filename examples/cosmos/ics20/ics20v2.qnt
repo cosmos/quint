@@ -410,7 +410,7 @@ module ics20v2 {
         pure val nextChannel=nextStuff._2
         pure val newForwardingPath=nextStuff._3
 
-        pure val newTempChainState = sendFungibleTokens(tempChainState, data.tokens, 
+        pure val newTempChainState = sendFungibleTokens(tempChainState, tempChainState.receivedTokens, 
                               receiver, finalReceiver, newForwardingPath, nextPort, nextChannel,
                               10,10) // Which Timeout?  
         // store packet for future sending ack
